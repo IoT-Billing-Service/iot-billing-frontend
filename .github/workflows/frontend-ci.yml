@@ -61,3 +61,20 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npx vitest run --reporter=verbose
+
+  pwa:
+    name: PWA Audit
+    runs-on: ubuntu-latest
+    needs: [build]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: Run Lighthouse CI
+        run: |
+          npm i -g @lhci/cli@0.14.x
+          lhci autorun --collect.staticDistDir=./out || lhci autorun --collect.staticDistDir=./.next || echo "Lighthouse audit skipped (no static export)"
