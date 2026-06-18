@@ -4,6 +4,8 @@ import { useState } from 'react';
 import { useWallet } from '@/components/providers/WalletProvider';
 import { formatCurrency } from '@/utils/currencyFormatter';
 import { ErrorDecoder } from '@/utils/errorDecoder';
+import { useTxRetryQueue } from '@/hooks/useTxRetryQueue';
+import { TxStatusList } from './TxStatusPill';
 
 function ErrorBanner({ decoded, raw }: { decoded: string; raw: string }) {
   const [expanded, setExpanded] = useState(false);
@@ -50,6 +52,9 @@ export function TransactionModal({
   const [submitting, setSubmitting] = useState(false);
   const [txError, setTxError] = useState<{ decoded: string; raw: string } | null>(null);
 
+  // Initialize retry queue with persistence
+  const { pendingTransactions, enqueue, clearCompleted } = useTxRetryQueue(10, 'escrow-queue');
+
   const isDeposit = type === 'escrow_deposit';
 
   const estimateGas = async () => {
@@ -95,7 +100,19 @@ export function TransactionModal({
       });
       if (response.ok) {
         const data = await response.json();
-        onComplete?.(data.hash as string);
+        const hash = data.hash as string;
+
+        // Add to retry queue with deduplication
+        await enqueue({
+          hash,
+          contractId,
+          amount,
+          asset,
+          publicKey: metrics.publicKey,
+          type,
+        });
+
+        onComplete?.(hash);
       } else {
         const errData = await response.json().catch(() => ({}));
         const raw = (errData.error as string) ?? response.statusText;
@@ -107,6 +124,11 @@ export function TransactionModal({
     } finally {
       setSubmitting(false);
     }
+  };
+
+  const handleClearCompleted = async () => {
+    const count = await clearCompleted();
+    console.log(`Cleared ${count} completed transactions`);
   };
 
   return (
@@ -146,6 +168,16 @@ export function TransactionModal({
         </div>
 
         {txError && <ErrorBanner decoded={txError.decoded} raw={txError.raw} />}
+
+        {/* Transaction Status Display */}
+        {pendingTransactions.length > 0 && (
+          <div className="mt-4">
+            <TxStatusList
+              transactions={pendingTransactions}
+              onClearCompleted={handleClearCompleted}
+            />
+          </div>
+        )}
 
         <div className="mt-5 flex gap-2">
           <button
