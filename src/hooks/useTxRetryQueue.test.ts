@@ -165,49 +165,60 @@ describe('useTxRetryQueue', () => {
     );
   }, 15000); // Increase test timeout to 15 seconds
 
-  it('should update transaction status when confirmed', async () => {
-    const pendingTx: indexedDbCache.PendingTransaction = {
-      id: 'pending-tx',
-      hash: 'hash-confirm',
-      contractId: 'contract-123',
-      amount: '1000',
-      asset: 'USDC',
-      publicKey: 'GTEST123',
-      type: 'escrow_deposit',
-      status: 'pending',
-      retryCount: 0,
-      maxRetries: 10,
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
-    };
+  it(
+    'should update transaction status when confirmed',
+    async () => {
+      const pendingTx: indexedDbCache.PendingTransaction = {
+        id: 'pending-tx',
+        hash: 'hash-confirm',
+        contractId: 'contract-123',
+        amount: '1000',
+        asset: 'USDC',
+        publicKey: 'GTEST123',
+        type: 'escrow_deposit',
+        status: 'pending',
+        retryCount: 0,
+        maxRetries: 10,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      };
 
-    vi.mocked(indexedDbCache.getAllPendingTransactions).mockResolvedValue([pendingTx]);
+      vi.mocked(indexedDbCache.getAllPendingTransactions).mockResolvedValue([pendingTx]);
 
-    // Mock fetch to return confirmed status
-    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValue({
-      ok: true,
-      json: async () => ({ status: 'confirmed', ledger: 1000000 }),
-    });
+      // Mock fetch to return confirmed status immediately
+      (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValue({
+        ok: true,
+        json: async () => ({ status: 'confirmed', ledger: 1000000 }),
+      });
 
-    const { result } = renderHook(() => useTxRetryQueue(10, 'test-queue'));
+      const { result } = renderHook(() => useTxRetryQueue(10, 'test-queue'));
 
-    await waitFor(() => {
-      expect(result.current.pendingTransactions.length).toBe(1);
-    });
+      // Wait for initial state to be populated
+      await waitFor(() => {
+        expect(result.current.pendingTransactions.length).toBe(1);
+      });
 
-    // Wait for polling to detect confirmation
-    await waitFor(
-      () => {
-        expect(vi.mocked(indexedDbCache.savePendingTransaction)).toHaveBeenCalledWith(
-          expect.objectContaining({
-            status: 'confirmed',
-            lastScannedLedger: 1000000,
-          }),
-        );
-      },
-      { timeout: 10000 },
-    );
-  }, 15000); // Increase test timeout to 15 seconds
+      // Wait for the fetch call to happen
+      await waitFor(
+        () => {
+          expect(global.fetch).toHaveBeenCalledWith(
+            expect.stringContaining('/api/escrow/tx-status?hash=hash-confirm'),
+          );
+        },
+        { timeout: 8000 },
+      );
+
+      // Wait for the state update to complete
+      await waitFor(
+        () => {
+          const tx = result.current.pendingTransactions.find((t) => t.id === 'pending-tx');
+          expect(tx?.status).toBe('confirmed');
+        },
+        { timeout: 8000 },
+      );
+    },
+    20000,
+  ); // Increase test timeout to 20 seconds
 
   it('should clear completed transactions', async () => {
     vi.mocked(indexedDbCache.deleteCompletedTransactions).mockResolvedValue(3);

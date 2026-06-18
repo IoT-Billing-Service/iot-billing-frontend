@@ -51,43 +51,44 @@ export function useTxRetryQueue(maxRetries: number = MAX_RETRIES_DEFAULT, persis
             const data = await response.json();
 
             if (data.status === 'confirmed') {
-              // Update IndexedDB
-              const tx = pendingTxs.find((t) => t.id === id);
-              if (tx && persistenceKey) {
-                await savePendingTransaction({
-                  ...tx,
-                  status: 'confirmed',
-                  lastScannedLedger: data.ledger,
-                  updatedAt: Date.now(),
-                });
-                setPendingTxs((prev) =>
-                  prev.map((t) =>
-                    t.id === id
-                      ? {
-                          ...t,
-                          status: 'confirmed' as const,
-                          lastScannedLedger: data.ledger,
-                          updatedAt: Date.now(),
-                        }
-                      : t,
-                  ),
+              // Update state using functional form to avoid stale closure
+              setPendingTxs((prev) => {
+                const tx = prev.find((t) => t.id === id);
+                if (tx && persistenceKey) {
+                  // Save to IndexedDB
+                  savePendingTransaction({
+                    ...tx,
+                    status: 'confirmed',
+                    lastScannedLedger: data.ledger,
+                    updatedAt: Date.now(),
+                  });
+                }
+                return prev.map((t) =>
+                  t.id === id
+                    ? {
+                        ...t,
+                        status: 'confirmed' as const,
+                        lastScannedLedger: data.ledger,
+                        updatedAt: Date.now(),
+                      }
+                    : t,
                 );
-              }
+              });
               clearInterval(pollInterval);
             } else if (data.status === 'failed') {
-              const tx = pendingTxs.find((t) => t.id === id);
-              if (tx && persistenceKey) {
-                await savePendingTransaction({
-                  ...tx,
-                  status: 'failed',
-                  updatedAt: Date.now(),
-                });
-                setPendingTxs((prev) =>
-                  prev.map((t) =>
-                    t.id === id ? { ...t, status: 'failed' as const, updatedAt: Date.now() } : t,
-                  ),
+              setPendingTxs((prev) => {
+                const tx = prev.find((t) => t.id === id);
+                if (tx && persistenceKey) {
+                  savePendingTransaction({
+                    ...tx,
+                    status: 'failed',
+                    updatedAt: Date.now(),
+                  });
+                }
+                return prev.map((t) =>
+                  t.id === id ? { ...t, status: 'failed' as const, updatedAt: Date.now() } : t,
                 );
-              }
+              });
               clearInterval(pollInterval);
             }
           }
@@ -95,19 +96,19 @@ export function useTxRetryQueue(maxRetries: number = MAX_RETRIES_DEFAULT, persis
           if (attempts >= MAX_POLL_ATTEMPTS) {
             clearInterval(pollInterval);
             // Mark as failed after max attempts
-            const tx = pendingTxs.find((t) => t.id === id);
-            if (tx && persistenceKey) {
-              await savePendingTransaction({
-                ...tx,
-                status: 'failed',
-                updatedAt: Date.now(),
-              });
-              setPendingTxs((prev) =>
-                prev.map((t) =>
-                  t.id === id ? { ...t, status: 'failed' as const, updatedAt: Date.now() } : t,
-                ),
+            setPendingTxs((prev) => {
+              const tx = prev.find((t) => t.id === id);
+              if (tx && persistenceKey) {
+                savePendingTransaction({
+                  ...tx,
+                  status: 'failed',
+                  updatedAt: Date.now(),
+                });
+              }
+              return prev.map((t) =>
+                t.id === id ? { ...t, status: 'failed' as const, updatedAt: Date.now() } : t,
               );
-            }
+            });
           }
         } catch (error) {
           console.error('Error polling tx status:', error);
@@ -116,7 +117,7 @@ export function useTxRetryQueue(maxRetries: number = MAX_RETRIES_DEFAULT, persis
 
       return () => clearInterval(pollInterval);
     },
-    [pendingTxs, persistenceKey],
+    [persistenceKey],
   );
 
   // Restore pending transactions from IndexedDB on mount
