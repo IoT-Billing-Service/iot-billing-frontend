@@ -1,7 +1,15 @@
 'use client';
 
+import dynamic from 'next/dynamic';
 import { useWallet } from '@/components/providers/WalletProvider';
-import { TelemetryChart } from '@/components/dashboard/TelemetryChart';
+
+const TelemetryChart = dynamic(
+  () =>
+    import('@/components/dashboard/TelemetryChart').then((mod) => ({
+      default: mod.TelemetryChart,
+    })),
+  { ssr: false },
+);
 
 const mockData = Array.from({ length: 100 }, (_, i) => ({
   timestamp: Date.now() - (100 - i) * 1000,

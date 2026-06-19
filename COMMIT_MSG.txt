@@ -1,0 +1,14 @@
+feat: implement bundle aggregation auditing and dynamic code splitting (#17)
+
+- Split providers: root layout now uses lightweight ThemeProvider only
+- Create WalletProviders component (QueryProvider + WalletProvider) for dashboard
+- Dashboard layout eagerly imports WalletProviders (route-level code splitting)
+- Home page dynamically imports wallet-dependent content via next/dynamic
+- TelemetryChart dynamically imported in dashboard page with ssr: false
+- Configure @next/bundle-analyzer with ANALYZE=true env variable
+- Add Webpack splitChunks for @stellar/* and bignumber.js into stellar-vendor chunk
+- Set experimental.webpackBuildWorker for parallel builds
+- Add bundle size audit script with 200KB threshold
+- Add bundle-audit CI job that fails if initial JS exceeds 200KB
+
+Closes #17
