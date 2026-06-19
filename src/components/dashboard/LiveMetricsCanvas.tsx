@@ -93,6 +93,16 @@ export function LiveMetricsCanvas({ stream, metrics, height = 300 }: LiveMetrics
       if (!canvas || !container) return;
 
       const rect = container.getBoundingClientRect();
+
+      // Viewport culling: skip drawing if container is entirely off-screen
+      const isOffscreen =
+        rect.bottom < 0 ||
+        rect.top > (window.innerHeight || document.documentElement.clientHeight) ||
+        rect.right < 0 ||
+        rect.left > (window.innerWidth || document.documentElement.clientWidth);
+
+      if (isOffscreen) return;
+
       const dpr = window.devicePixelRatio || 1;
       const w = rect.width;
       const h = height;
