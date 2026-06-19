@@ -13,8 +13,6 @@ interface TelemetryChartProps {
   color?: string;
   height?: number;
   width?: number;
-  /** 0-1 progress for chunked history loading */
-  loadingProgress?: number;
   /** Full time range the chart represents (used for progressive rendering) */
   totalTimeRange?: { start: number; end: number };
   /** Time range currently being fetched (rendered as dimmed pending region) */
@@ -44,7 +42,6 @@ export function TelemetryChart({
   color = '#00ff88',
   height = 200,
   width = 600,
-  loadingProgress,
   totalTimeRange,
   pendingRange,
   isLoading = false,
@@ -58,11 +55,50 @@ export function TelemetryChart({
   const msgTimestamps = useRef<number[]>([]);
   const workerRef = useRef<Worker | null>(null);
   const rafRef = useRef(0);
-  const prevDataLenRef = useRef(0);
   const lastFrameTime = useRef(0);
   const isPageVisible = useRef(true);
   const [range, setRange] = useState<{ min: number; max: number }>({ min: 0, max: 1 });
   const [memoryInfo, setMemoryInfo] = useState<string | null>(null);
+
+  // Visibility change handler: pause/resume rAF loop
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      isPageVisible.current = document.visibilityState === 'visible';
+      if (isPageVisible.current) {
+        lastFullRedraw.current = 0; // Force full redraw on resume
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, []);
+
+  // Dev-mode memory measurement
+  useEffect(() => {
+    if (process.env.NODE_ENV !== 'development') return;
+
+    const measure = async () => {
+      try {
+        const perf = performance as Performance & {
+          measureUserAgentSpecificMemory?: () => Promise<{ bytes: number }>;
+        };
+        if (typeof perf.measureUserAgentSpecificMemory === 'function') {
+          const result = await perf.measureUserAgentSpecificMemory();
+          const usedMB = ((result.bytes ?? 0) / 1_048_576).toFixed(2);
+          setMemoryInfo(`TelemetryChart memory: ${usedMB} MB`);
+        }
+      } catch {
+        // Not available in all browsers
+      }
+    };
+
+    const interval = setInterval(measure, 30_000);
+    measure();
+
+    return () => clearInterval(interval);
+  }, []);
 
   // Upstream: worker initialization
   useEffect(() => {
@@ -182,9 +218,43 @@ export function TelemetryChart({
       const ring = ringRef.current;
       const head = headRef.current;
       const count = countRef.current;
+      const padding = 20;
+
+      const fullRedraw = now - lastFullRedraw.current >= FULL_REDRAW_MS;
+      const padding = 20;
+
+      ctx.clearRect(0, 0, width, height);
+
+      // Draw pending/loading region (dimmed overlay) when data is still being fetched
+      if (pendingRange && totalTimeRange) {
+        const totalSpan = totalTimeRange.end - totalTimeRange.start || 1;
+        const pendingStartRatio = (pendingRange.start - totalTimeRange.start) / totalSpan;
+        const pendingEndRatio = (pendingRange.end - totalTimeRange.start) / totalSpan;
+        const px = padding + pendingStartRatio * (width - 2 * padding);
+        const pw = Math.max(2, (pendingEndRatio - pendingStartRatio) * (width - 2 * padding));
+
+        // Animated striped pattern for loading region
+        ctx.fillStyle = 'rgba(100, 100, 100, 0.15)';
+        ctx.fillRect(px, padding, pw, height - 2 * padding);
+
+        // Dashed border around pending region
+        ctx.save();
+        ctx.strokeStyle = 'rgba(150, 150, 150, 0.4)';
+        ctx.lineWidth = 1;
+        ctx.setLineDash([4, 4]);
+        ctx.lineDashOffset = -(now / 50); // Animated dash
+        ctx.strokeRect(px, padding, pw, height - 2 * padding);
+        ctx.setLineDash([]);
+        ctx.restore();
+
+        // Loading label
+        ctx.fillStyle = 'rgba(200, 200, 200, 0.5)';
+        ctx.font = '10px monospace';
+        ctx.fillText('Loading...', px + 4, padding + 14);
+      }
 
       if (count < 2) {
-        // HEAD: Draw loading state text even with no data yet
+        // Draw loading state text even with no data yet
         if (isLoading && totalTimeRange) {
           ctx.fillStyle = 'rgba(200, 200, 200, 0.6)';
           ctx.font = '14px monospace';
@@ -194,39 +264,9 @@ export function TelemetryChart({
         }
         return;
       }
+
       if (count > 1 && range.max === range.min && range.max === 0) return;
 
-      const fullRedraw = now - lastFullRedraw.current >= FULL_REDRAW_MS;
-      const padding = 20;
-
-      ctx.clearRect(0, 0, width, height);
-
-      // HEAD: Draw pending/loading region (dimmed overlay) when data is still being fetched
-      if (pendingRange && totalTimeRange) {
-        const totalSpan = totalTimeRange.end - totalTimeRange.start || 1;
-        const pendingStartRatio = (pendingRange.start - totalTimeRange.start) / totalSpan;
-        const pendingEndRatio = (pendingRange.end - totalTimeRange.start) / totalSpan;
-        const px = padding + pendingStartRatio * (width - 2 * padding);
-        const pw = Math.max(2, (pendingEndRatio - pendingStartRatio) * (width - 2 * padding));
-
-        ctx.fillStyle = 'rgba(100, 100, 100, 0.15)';
-        ctx.fillRect(px, padding, pw, height - 2 * padding);
-
-        ctx.save();
-        ctx.strokeStyle = 'rgba(150, 150, 150, 0.4)';
-        ctx.lineWidth = 1;
-        ctx.setLineDash([4, 4]);
-        ctx.lineDashOffset = -(now / 50);
-        ctx.strokeRect(px, padding, pw, height - 2 * padding);
-        ctx.setLineDash([]);
-        ctx.restore();
-
-        ctx.fillStyle = 'rgba(200, 200, 200, 0.5)';
-        ctx.font = '10px monospace';
-        ctx.fillText('Loading...', px + 4, padding + 14);
-      }
-
-      // Upstream: line chart drawing
       ctx.strokeStyle = color;
       ctx.lineWidth = 2;
 
@@ -292,18 +332,7 @@ export function TelemetryChart({
         }
       }
     },
-    [
-      color,
-      height,
-      isLoading,
-      loadingProgress,
-      metric,
-      pendingRange,
-      range,
-      sendToWorker,
-      totalTimeRange,
-      width,
-    ],
+    [color, height, width, metric, range, sendToWorker, pendingRange, totalTimeRange, isLoading],
   );
 
   // HEAD: rAF loop with visibility check
@@ -313,10 +342,12 @@ export function TelemetryChart({
     const loop = (now: number) => {
       if (!running) return;
       if (!isPageVisible.current) {
+        // Page hidden: keep looping but skip drawing to avoid wasted renders
         rafRef.current = requestAnimationFrame(loop);
         return;
       }
       if (lastFrameTime.current > 0 && now - lastFrameTime.current > 5000) {
+        // Tab was hidden for >5s; force full redraw on resume
         lastFullRedraw.current = 0;
       }
       lastFrameTime.current = now;
