@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
+    "build": "next build --webpack",
     "start": "next start",
     "lint": "eslint . --ext .ts,.tsx",
     "format": "prettier --write \"src/**/*.{ts,tsx,css,json}\"",
@@ -12,7 +12,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "generate-pwa-assets": "node scripts/generate-pwa-assets.mjs",
-    "analyze": "ANALYZE=true npm run build",
+    "analyze": "ANALYZE=true next build --webpack",
     "bundle-check": "node scripts/check-bundle-size.mjs"
   },
   "dependencies": {
