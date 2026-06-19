@@ -100,6 +100,7 @@ export function TelemetryChart({
     return () => clearInterval(interval);
   }, []);
 
+  // Upstream: worker initialization
   useEffect(() => {
     workerRef.current = createWorker();
 
@@ -118,10 +119,10 @@ export function TelemetryChart({
     };
   }, []);
 
+  // Upstream: ring buffer data processing with prevDataLenRef
   useEffect(() => {
     const points = data;
     const prevLen = prevDataLenRef.current;
-    // Only append new points that haven't been added to the ring buffer yet
     const newPoints = points.slice(prevLen);
     prevDataLenRef.current = points.length;
 
@@ -155,6 +156,46 @@ export function TelemetryChart({
     }
   }, [data, metric]);
 
+  // HEAD: Visibility change handler — pause/resume rAF loop
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      isPageVisible.current = document.visibilityState === 'visible';
+      if (isPageVisible.current) {
+        lastFullRedraw.current = 0;
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, []);
+
+  // HEAD: Dev-mode memory measurement
+  useEffect(() => {
+    if (process.env.NODE_ENV !== 'development') return;
+
+    const measure = async () => {
+      try {
+        const perf = performance as Performance & {
+          measureUserAgentSpecificMemory?: () => Promise<{ bytes: number }>;
+        };
+        if (typeof perf.measureUserAgentSpecificMemory === 'function') {
+          const result = await perf.measureUserAgentSpecificMemory();
+          const usedMB = ((result.bytes ?? 0) / 1_048_576).toFixed(2);
+          setMemoryInfo(`TelemetryChart memory: ${usedMB} MB`);
+        }
+      } catch {
+        // Not available in all browsers
+      }
+    };
+
+    const interval = setInterval(measure, 30_000);
+    measure();
+
+    return () => clearInterval(interval);
+  }, []);
+
   const sendToWorker = useCallback((values: number[]) => {
     workerRef.current?.postMessage({
       type: 'computeRange',
@@ -180,6 +221,7 @@ export function TelemetryChart({
       const padding = 20;
 
       const fullRedraw = now - lastFullRedraw.current >= FULL_REDRAW_MS;
+      const padding = 20;
 
       ctx.clearRect(0, 0, width, height);
 
@@ -267,7 +309,7 @@ export function TelemetryChart({
       const latest = ring[(head + count - 1) % RING_CAPACITY] as TelemetryDataPoint;
       ctx.fillText(`${metric}: ${latest.value.toFixed(2)}`, padding, 20);
 
-      // Draw loading gradient for progressive chunked history
+      // Upstream: Loading gradient for progressive chunked history
       if (loadingProgress !== undefined && loadingProgress < 1 && count > 1) {
         const loadedX = padding + loadingProgress * (width - 2 * padding);
         const gradient = ctx.createLinearGradient(loadedX, 0, width, 0);
@@ -277,7 +319,6 @@ export function TelemetryChart({
         ctx.fillStyle = gradient;
         ctx.fillRect(loadedX, 0, width - loadedX, height);
 
-        // Loading dots animation
         const dotX = loadedX + 30;
         const dotY = height / 2;
         const dotRadius = 3;
@@ -294,6 +335,7 @@ export function TelemetryChart({
     [color, height, width, metric, range, sendToWorker, pendingRange, totalTimeRange, isLoading],
   );
 
+  // HEAD: rAF loop with visibility check
   useEffect(() => {
     let running = true;
 
