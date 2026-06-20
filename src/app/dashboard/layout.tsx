@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
 import { DashboardProviders } from '@/components/providers/DashboardProviders';
+import { NotificationToast } from '@/components/NotificationToast';
 
 /**
  * Dashboard layout
@@ -23,6 +24,7 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
         </nav>
         <main className="flex-1 p-6">{children}</main>
       </div>
+      <NotificationToast />
     </DashboardProviders>
   );
 }

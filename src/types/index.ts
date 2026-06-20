@@ -100,8 +100,49 @@ export interface Web3AuthSession {
 export interface SorobanEvent {
   contractId: string;
   topic: string;
+  topics?: string[];
   data: string;
   ledger: number;
   timestamp: number;
   decoded?: Record<string, unknown>;
+}
+
+export type NotificationSeverity = 'info' | 'warning' | 'critical';
+
+export interface LowBalanceEvent {
+  kind: 'LowBalance';
+  contractId: string;
+  deviceId: string;
+  balance: string;
+  threshold: string;
+  timestamp: number;
+}
+
+export interface DeviceSuspendedEvent {
+  kind: 'DeviceSuspended';
+  contractId: string;
+  deviceId: string;
+  reason: string;
+  timestamp: number;
+}
+
+export interface EscrowDisputedEvent {
+  kind: 'EscrowDisputed';
+  contractId: string;
+  escrowId: string;
+  amount: string;
+  initiator: string;
+  timestamp: number;
+}
+
+export type DecodedSorobanEvent = LowBalanceEvent | DeviceSuspendedEvent | EscrowDisputedEvent;
+
+export interface AppNotification {
+  id: string;
+  severity: NotificationSeverity;
+  title: string;
+  message: string;
+  event: DecodedSorobanEvent;
+  timestamp: number;
+  dismissed: boolean;
 }

@@ -7,6 +7,7 @@ const STORES = [
   'authSession',
   'pendingTransactions',
   'pendingMutations',
+  'notifications',
 ] as const;
 
 type StoreName = (typeof STORES)[number];

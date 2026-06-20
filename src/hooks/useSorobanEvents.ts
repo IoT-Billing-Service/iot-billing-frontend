@@ -1,7 +1,15 @@
 'use client';
 
 import { useEffect, useRef, useState, useCallback } from 'react';
-import type { SorobanEvent } from '@/types';
+import type { SorobanEvent, AppNotification } from '@/types';
+import {
+  decodeSorobanEvent,
+  getEventSeverity,
+  getEventTitle,
+  buildNotificationMessage,
+} from '@/utils/sorobanEventDecoder';
+import { useNotificationStore } from '@/stores/useNotificationStore';
+import { cacheGet } from '@/services/indexedDbCache';
 
 interface EventFilter {
   contractId?: string;
@@ -35,6 +43,15 @@ export function useSorobanEvents(filter?: EventFilter) {
   }, []);
 
   useEffect(() => {
+    // Restore undismissed critical notifications that survived page reload
+    cacheGet<AppNotification[]>('notifications', 'pending-critical')
+      .then((saved) => {
+        if (saved?.length) {
+          useNotificationStore.getState().hydrateCritical(saved);
+        }
+      })
+      .catch(() => {});
+
     let flushInterval: ReturnType<typeof setInterval>;
     const parsed = filterKey ? (JSON.parse(filterKey) as EventFilter | undefined) : undefined;
     const connect = () => {
@@ -54,8 +71,24 @@ export function useSorobanEvents(filter?: EventFilter) {
       ws.onmessage = (msg) => {
         try {
           const raw = JSON.parse(msg.data) as SorobanEvent;
-          const decoded = decodeRawEvent(raw.data);
-          bufferRef.current.push({ ...raw, decoded });
+          const data = decodeRawEvent(raw.data);
+          bufferRef.current.push({ ...raw, decoded: data });
+
+          // Decode event and dispatch notification immediately (not via buffer)
+          const topics = (raw.topics ?? [raw.topic]).filter(Boolean) as string[];
+          const decoded = decodeSorobanEvent(topics, data);
+          if (decoded) {
+            const notification: AppNotification = {
+              id: `${raw.contractId}-${raw.ledger}-${decoded.kind}`,
+              severity: getEventSeverity(decoded.kind),
+              title: getEventTitle(decoded.kind),
+              message: buildNotificationMessage(decoded),
+              event: decoded,
+              timestamp: raw.timestamp,
+              dismissed: false,
+            };
+            useNotificationStore.getState().add(notification);
+          }
         } catch {
           // skip malformed messages
         }
