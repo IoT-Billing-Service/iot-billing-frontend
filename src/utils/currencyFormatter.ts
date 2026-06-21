@@ -1,30 +1,54 @@
 import BigNumber from 'bignumber.js';
 
-const SOROBAN_DECIMALS = 7;
+export type AssetFormatter = {
+  fromSorobanInt(raw: string | bigint): string;
+  toSorobanInt(display: string | number): string;
+  format(amount: string | number, decimals?: number): string;
+};
 
-export function fromSorobanInt(raw: string | bigint, decimals: number = SOROBAN_DECIMALS): string {
-  const value = new BigNumber(raw.toString());
+/**
+ * Factory to create a formatter for a specific asset decimal precision.
+ * Precomputes divisor and multiplier for performance.
+ */
+export function createAssetFormatter(decimals: number): AssetFormatter {
   const divisor = new BigNumber(10).pow(decimals);
-  return value.div(divisor).toFixed(decimals, BigNumber.ROUND_HALF_UP);
+  const multiplier = new BigNumber(10).pow(decimals);
+
+  return {
+    fromSorobanInt(raw: string | bigint): string {
+      const value = new BigNumber(raw.toString());
+      return value.div(divisor).toFixed(decimals, BigNumber.ROUND_HALF_UP);
+    },
+    toSorobanInt(display: string | number): string {
+      const value = new BigNumber(display);
+      return value.times(multiplier).integerValue(BigNumber.ROUND_HALF_UP).toString();
+    },
+    format(amount: string | number, fmtDecimals: number = 2): string {
+      try {
+        const value = new BigNumber(amount);
+        if (value.isNaN()) return '0.00';
+        return value.toFormat(fmtDecimals, BigNumber.ROUND_HALF_UP);
+      } catch {
+        return '0.00';
+      }
+    },
+  };
 }
 
-export function toSorobanInt(
-  display: string | number,
-  decimals: number = SOROBAN_DECIMALS,
-): string {
-  const value = new BigNumber(display);
-  const multiplier = new BigNumber(10).pow(decimals);
-  return value.times(multiplier).integerValue(BigNumber.ROUND_HALF_UP).toString();
+// Default formatter using Soroban's native 7-decimal assets.
+export const defaultFormatter = createAssetFormatter(7);
+
+// Backwards‑compatible helpers (retain original signatures).
+export function fromSorobanInt(raw: string | bigint, decimals: number = 7): string {
+  return createAssetFormatter(decimals).fromSorobanInt(raw);
+}
+
+export function toSorobanInt(display: string | number, decimals: number = 7): string {
+  return createAssetFormatter(decimals).toSorobanInt(display);
 }
 
 export function formatCurrency(amount: string | number, decimals: number = 2): string {
-  try {
-    const value = new BigNumber(amount);
-    if (value.isNaN()) return '0.00';
-    return value.toFormat(decimals, BigNumber.ROUND_HALF_UP);
-  } catch {
-    return '0.00';
-  }
+  return defaultFormatter.format(amount, decimals);
 }
 
 export function formatCompact(amount: string | number): string {
@@ -38,4 +62,22 @@ export function formatCompact(amount: string | number): string {
 
 export function compareBalances(a: string, b: string): number {
   return new BigNumber(a).comparedTo(new BigNumber(b)) ?? 0;
+}
+
+/**
+ * Aggregate an array of balances with individual decimal definitions.
+ * Each balance object must contain `amount` (string|number) and `decimals`.
+ */
+export function formatAggregate(balances: { amount: string | number; decimals: number }[]): string {
+  if (balances.length === 0) return '0';
+  const maxDecimals = Math.max(...balances.map((b) => b.decimals));
+  const commonMultiplier = new BigNumber(10).pow(maxDecimals);
+  let total = new BigNumber(0);
+  balances.forEach(({ amount, decimals }) => {
+    const formatter = createAssetFormatter(decimals);
+    const sorobanInt = new BigNumber(formatter.toSorobanInt(amount));
+    const adjusted = sorobanInt.times(new BigNumber(10).pow(maxDecimals - decimals));
+    total = total.plus(adjusted);
+  });
+  return total.dividedBy(commonMultiplier).toFixed(maxDecimals, BigNumber.ROUND_HALF_UP);
 }
