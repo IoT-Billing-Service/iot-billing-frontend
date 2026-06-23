@@ -1,6 +1,6 @@
 'use client';
 
-import { useRef, useEffect, useCallback } from 'react';
+import { useRef, useEffect, useCallback, useState } from 'react';
 import { useTheme } from '@/components/providers/ThemeProvider';
 
 interface MetricsFrame {
@@ -16,7 +16,10 @@ interface LiveMetricsCanvasProps {
 
 // Max float64 pairs per postMessage chunk: 4096 points × 2 floats × 8 bytes = 64 KB (within limit)
 const CHUNK_SIZE = 4096;
-const RING_CAPACITY = 100_000;
+const RING_CAPACITY = 10_000;
+const FULL_REDRAW_MS = 500;
+const RATE_WARN_THRESHOLD = 3000;
+const MAX_POINTS_PER_METRIC = 2_000;
 
 /** Split a flat Float64Array into chunks of CHUNK_SIZE points (2 floats each). */
 function* chunkBuffer(buf: Float64Array): Generator<Float64Array> {
@@ -27,7 +30,7 @@ function* chunkBuffer(buf: Float64Array): Generator<Float64Array> {
 }
 
 export function LiveMetricsCanvas({ stream, metrics, height = 300 }: LiveMetricsCanvasProps) {
-  const { chartPalette } = useTheme();
+  const { chartPalette, prefersReducedMotion } = useTheme();
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const workerRef = useRef<Worker | null>(null);
@@ -41,6 +44,42 @@ export function LiveMetricsCanvas({ stream, metrics, height = 300 }: LiveMetrics
   const headRef = useRef(0);
   const countRef = useRef(0);
   const rafRef = useRef(0);
+  const lastFullRedraw = useRef(0);
+  const lastDrawnHead = useRef(0);
+  const lastFrameTime = useRef(0);
+  const msgTimestamps = useRef<number[]>([]);
+  const rangeCache = useRef<Map<string, { min: number; max: number }>>(new Map());
+  const isPageVisible = useRef(true);
+  const [memoryInfo, setMemoryInfo] = useState<string | null>(null);
+
+  // ─── Visibility tracking ──────────────────────────────────────────────────────
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      isPageVisible.current = document.visibilityState === 'visible';
+      if (isPageVisible.current) lastFullRedraw.current = 0;
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+  }, []);
+
+  // ─── Dev-mode memory measurement ─────────────────────────────────────────────
+  useEffect(() => {
+    if (process.env.NODE_ENV !== 'development') return;
+    const measure = async () => {
+      try {
+        const perf = performance as Performance & {
+          measureUserAgentSpecificMemory?: () => Promise<{ bytes: number }>;
+        };
+        if (typeof perf.measureUserAgentSpecificMemory === 'function') {
+          const result = await perf.measureUserAgentSpecificMemory();
+          setMemoryInfo(`LiveMetricsCanvas memory: ${((result.bytes ?? 0) / 1_048_576).toFixed(2)} MB`);
+        }
+      } catch { /* not available in all browsers */ }
+    };
+    const interval = setInterval(measure, 30_000);
+    measure();
+    return () => clearInterval(interval);
+  }, []);
 
   // ─── Worker setup ────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -56,9 +95,7 @@ export function LiveMetricsCanvas({ stream, metrics, height = 300 }: LiveMetrics
     workerRef.current = worker;
 
     worker.onmessage = (e: MessageEvent) => {
-      if (e.data.type === 'ready') {
-        workerReadyRef.current = true;
-      }
+      if (e.data.type === 'ready') workerReadyRef.current = true;
     };
     worker.onerror = () => {
       fallbackRef.current = true;
@@ -73,7 +110,7 @@ export function LiveMetricsCanvas({ stream, metrics, height = 300 }: LiveMetrics
     };
   }, []);
 
-  // ─── Transfer OffscreenCanvas once on mount (after canvas element exists) ───
+  // ─── Transfer OffscreenCanvas once on mount ───────────────────────────────────
   useEffect(() => {
     const canvas = canvasRef.current;
     const container = containerRef.current;
@@ -94,7 +131,6 @@ export function LiveMetricsCanvas({ stream, metrics, height = 300 }: LiveMetrics
       worker.postMessage({ type: 'init', canvas: offscreen }, [offscreen]);
       offscreenTransferredRef.current = true;
     } catch {
-      // transferControlToOffscreen not supported → fall back
       fallbackRef.current = true;
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -112,11 +148,7 @@ export function LiveMetricsCanvas({ stream, metrics, height = 300 }: LiveMetrics
       const dpr = window.devicePixelRatio || 1;
 
       if (offscreenTransferredRef.current && workerRef.current) {
-        workerRef.current.postMessage({
-          type: 'resize',
-          width: w * dpr,
-          height: height * dpr,
-        });
+        workerRef.current.postMessage({ type: 'resize', width: w * dpr, height: height * dpr });
       } else if (fallbackRef.current && canvasRef.current) {
         canvasRef.current.width = w * dpr;
         canvasRef.current.height = height * dpr;
@@ -136,8 +168,6 @@ export function LiveMetricsCanvas({ stream, metrics, height = 300 }: LiveMetrics
     const worker = workerRef.current;
 
     if (!fallbackRef.current && worker && offscreenTransferredRef.current) {
-      // Build a flat Float64Array: [timestamp0, value0, timestamp1, value1, ...]
-      // We encode only the first metric's value as the Y axis; X = timestamp.
       const metric = metrics[0] ?? '';
       const flat = new Float64Array(stream.length * 2);
       for (let i = 0; i < stream.length; i++) {
@@ -145,27 +175,18 @@ export function LiveMetricsCanvas({ stream, metrics, height = 300 }: LiveMetrics
         flat[i * 2 + 1] = stream[i]!.values[metric] ?? 0;
       }
 
-      // Split into ≤ CHUNK_SIZE-point chunks and transfer each
       const chunks = [...chunkBuffer(flat)];
       const totalChunks = chunks.length;
 
       for (let idx = 0; idx < totalChunks; idx++) {
-        const chunk = chunks[idx]!;
-        // Copy the subarray to a standalone buffer for transfer
-        const transferBuf = chunk.slice().buffer;
+        const transferBuf = chunks[idx]!.slice().buffer;
         try {
           worker.postMessage(
-            {
-              type: 'chunk',
-              data: new Float64Array(transferBuf),
-              chunkIndex: idx,
-              totalChunks,
-            },
+            { type: 'chunk', data: new Float64Array(transferBuf), chunkIndex: idx, totalChunks },
             [transferBuf],
           );
         } catch (err) {
           if (err instanceof DOMException && err.name === 'DataCloneError') {
-            // Buffer exceeded transferable limit → fall back to main thread
             fallbackRef.current = true;
             break;
           }
@@ -186,71 +207,180 @@ export function LiveMetricsCanvas({ stream, metrics, height = 300 }: LiveMetrics
         headRef.current = (headRef.current + 1) % RING_CAPACITY;
       }
     }
+
+    const now = performance.now();
+    msgTimestamps.current.push(now);
+    const cutoff = now - 1000;
+    msgTimestamps.current = msgTimestamps.current.filter((t) => t > cutoff);
+    if (msgTimestamps.current.length > RATE_WARN_THRESHOLD) {
+      console.warn(
+        `[LiveMetricsCanvas] High incoming rate: ${msgTimestamps.current.length} msg/s.`,
+      );
+    }
   }, [stream, metrics]);
 
-  // ─── Fallback rAF draw loop ───────────────────────────────────────────────────
-  const drawFallback = useCallback(() => {
-    const canvas = canvasRef.current;
-    if (!canvas || !fallbackRef.current) return;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
+  // ─── Range computation (cached) ───────────────────────────────────────────────
+  const computeRange = useCallback((metric: string): { min: number; max: number } => {
+    const cached = rangeCache.current.get(metric);
+    if (cached) return cached;
 
     const ring = ringRef.current;
     const head = headRef.current;
     const count = countRef.current;
-    if (count < 2) return;
+    let min = Infinity, max = -Infinity, found = false;
 
-    const dpr = window.devicePixelRatio || 1;
-    const w = canvas.width / dpr;
-    const h = canvas.height / dpr;
-    const colors = chartPalette.length ? chartPalette : ['#5ec962', '#fca50a', '#21918c'];
-    const pad = 10;
+    for (let i = 0; i < count; i++) {
+      const v = (ring[(head + i) % RING_CAPACITY] as MetricsFrame).values[metric];
+      if (v === undefined) continue;
+      found = true;
+      if (v < min) min = v;
+      if (v > max) max = v;
+    }
 
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.save();
-    ctx.scale(dpr, dpr);
+    const result = found ? { min, max } : { min: 0, max: 1 };
+    rangeCache.current.set(metric, result);
+    return result;
+  }, []);
 
-    metrics.forEach((metric, mi) => {
-      let yMin = Infinity, yMax = -Infinity;
-      for (let i = 0; i < count; i++) {
-        const v = ring[(head + i) % RING_CAPACITY]!.values[metric];
-        if (v !== undefined) { if (v < yMin) yMin = v; if (v > yMax) yMax = v; }
+  // ─── Fallback draw frame ──────────────────────────────────────────────────────
+  const drawFrame = useCallback(
+    (now: number) => {
+      const canvas = canvasRef.current;
+      const container = containerRef.current;
+      if (!canvas || !container || !fallbackRef.current) return;
+
+      const rect = container.getBoundingClientRect();
+      const isOffscreen =
+        rect.bottom < 0 ||
+        rect.top > (window.innerHeight || document.documentElement.clientHeight) ||
+        rect.right < 0 ||
+        rect.left > (window.innerWidth || document.documentElement.clientWidth);
+      if (isOffscreen) return;
+
+      const dpr = window.devicePixelRatio || 1;
+      const w = rect.width;
+      const h = height;
+
+      if (canvas.width !== w * dpr || canvas.height !== h * dpr) {
+        canvas.width = w * dpr;
+        canvas.height = h * dpr;
+        canvas.style.width = `${w}px`;
+        canvas.style.height = `${h}px`;
       }
-      const yRange = yMax - yMin || 1;
 
-      ctx.strokeStyle = colors[mi % colors.length] ?? '#ffffff';
-      ctx.lineWidth = 1.5;
-      ctx.beginPath();
-      let first = true;
-      for (let i = 0; i < count; i++) {
-        const v = ring[(head + i) % RING_CAPACITY]!.values[metric];
-        if (v === undefined) continue;
-        const x = pad + (i / (count - 1)) * (w - 2 * pad);
-        const y = h - pad - ((v - yMin) / yRange) * (h - 2 * pad);
-        first ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
-        first = false;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+      ctx.scale(dpr, dpr);
+
+      const ring = ringRef.current;
+      const head = headRef.current;
+      const count = countRef.current;
+      if (count < 2) return;
+
+      const fullRedraw = now - lastFullRedraw.current >= FULL_REDRAW_MS;
+      const padding = 10;
+      const maxPoints = Math.min(MAX_POINTS_PER_METRIC, Math.max(50, Math.floor(w)));
+
+      ctx.clearRect(0, 0, w, h);
+
+      const colors =
+        chartPalette.length >= metrics.length
+          ? chartPalette
+          : ['#5ec962', '#fca50a', '#21918c', '#932667', '#fcffa4'];
+
+      metrics.forEach((metric, idx) => {
+        const color = colors[idx % colors.length] ?? '#ffffff';
+        const { min, max } = computeRange(metric);
+        const rng = max - min || 1;
+
+        const startIdx = !fullRedraw && lastDrawnHead.current > 0
+          ? Math.max(0, lastDrawnHead.current - 1)
+          : 0;
+
+        // Decimation: stride so we never plot more than maxPoints
+        const span = count - startIdx;
+        const stride = Math.max(1, Math.ceil(span / maxPoints));
+
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        let first = true;
+        let lastPlotted = -1;
+
+        for (let i = startIdx; i < count; i += stride) {
+          const v = (ring[(head + i) % RING_CAPACITY] as MetricsFrame).values[metric];
+          if (v === undefined) continue;
+          const x = padding + (i / (count - 1)) * (w - 2 * padding);
+          const y = h - padding - ((v - min) / rng) * (h - 2 * padding);
+          first ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+          first = false;
+          lastPlotted = i;
+        }
+
+        // Always anchor to the most recent sample
+        if (lastPlotted !== count - 1) {
+          const v = (ring[(head + count - 1) % RING_CAPACITY] as MetricsFrame).values[metric];
+          if (v !== undefined) {
+            const x = padding + ((count - 1) / (count - 1)) * (w - 2 * padding);
+            const y = h - padding - ((v - min) / rng) * (h - 2 * padding);
+            first ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+          }
+        }
+
+        ctx.stroke();
+      });
+
+      if (fullRedraw) {
+        lastFullRedraw.current = now;
+        rangeCache.current.clear();
       }
-      ctx.stroke();
-    });
+      lastDrawnHead.current = head + count;
+    },
+    [height, metrics, computeRange, chartPalette],
+  );
 
-    ctx.restore();
-  }, [metrics, chartPalette]);
-
+  // ─── Fallback rAF loop ────────────────────────────────────────────────────────
   useEffect(() => {
     if (!fallbackRef.current) return;
     let running = true;
-    const loop = () => {
+
+    const loop = (now: number) => {
       if (!running) return;
-      drawFallback();
+      if (!isPageVisible.current) {
+        rafRef.current = requestAnimationFrame(loop);
+        return;
+      }
+      if (lastFrameTime.current > 0 && now - lastFrameTime.current > 5000) {
+        lastFullRedraw.current = 0;
+      }
+      lastFrameTime.current = now;
+      drawFrame(now);
       rafRef.current = requestAnimationFrame(loop);
     };
+
+    if (prefersReducedMotion) {
+      const id = setInterval(() => {
+        if (!running || !isPageVisible.current) return;
+        const now = performance.now();
+        if (lastFrameTime.current > 0 && now - lastFrameTime.current > 5000) lastFullRedraw.current = 0;
+        lastFrameTime.current = now;
+        drawFrame(now);
+      }, 250);
+      return () => { running = false; clearInterval(id); };
+    }
+
     rafRef.current = requestAnimationFrame(loop);
-    return () => { running = false; cancelAnimationFrame(rafRef.current); };
-  }, [drawFallback]);
+    return () => { running = false; cancelAnimationFrame(rafRef.current); rafRef.current = 0; };
+  }, [drawFrame, prefersReducedMotion]);
 
   return (
     <div ref={containerRef} className="relative w-full">
       <canvas ref={canvasRef} className="block w-full" aria-label="Live metrics canvas" />
+      {memoryInfo && (
+        <div className="absolute bottom-1 right-2 rounded bg-black/70 px-2 py-0.5 text-[10px] text-gray-400 font-mono">
+          {memoryInfo}
+        </div>
+      )}
     </div>
   );
 }
