@@ -3,6 +3,7 @@
 import { useRef, useEffect, useCallback, useState } from 'react';
 import { useTheme } from '@/components/providers/ThemeProvider';
 import { FrameBudgetMonitor, decimationStride, type FrameBudgetReport } from '@/utils/frameBudget';
+import { useRenderLoop } from '@/hooks/useRenderLoop';
 
 interface MetricsFrame {
   timestamp: number;
@@ -38,8 +39,6 @@ export function LiveMetricsCanvas({ stream, metrics, height = 300 }: LiveMetrics
   const lastDrawnHead = useRef(0);
   const msgTimestamps = useRef<number[]>([]);
   const rangeCache = useRef<Map<string, { min: number; max: number }>>(new Map());
-  const rafRef = useRef(0);
-  const lastFrameTime = useRef(0);
   const isPageVisible = useRef(true);
   const [memoryInfo, setMemoryInfo] = useState<string | null>(null);
   const [frameStats, setFrameStats] = useState<FrameBudgetReport | null>(null);
@@ -288,52 +287,18 @@ export function LiveMetricsCanvas({ stream, metrics, height = 300 }: LiveMetrics
     [height, metrics, computeRange, chartPalette],
   );
 
-  useEffect(() => {
-    let running = true;
+  const isVisible = useCallback(() => isPageVisible.current, []);
+  const handleResumeAfterHidden = useCallback(() => {
+    // Tab was hidden long enough; force a full redraw on resume.
+    lastFullRedraw.current = 0;
+  }, []);
 
-    const loop = (now: number) => {
-      if (!running) return;
-      if (!isPageVisible.current) {
-        // Page hidden: keep looping but skip drawing to avoid wasted renders
-        rafRef.current = requestAnimationFrame(loop);
-        return;
-      }
-      if (lastFrameTime.current > 0 && now - lastFrameTime.current > 5000) {
-        // Tab was hidden for >5s; force full redraw on resume
-        lastFullRedraw.current = 0;
-      }
-      lastFrameTime.current = now;
-      drawFrame(now);
-      rafRef.current = requestAnimationFrame(loop);
-    };
-
-    // Respect reduced motion: use a longer interval instead of rAF
-    const delay = prefersReducedMotion ? 250 : 0;
-
-    if (prefersReducedMotion) {
-      const intervalId = setInterval(() => {
-        if (!running) return;
-        if (!isPageVisible.current) return;
-        if (lastFrameTime.current > 0 && performance.now() - lastFrameTime.current > 5000) {
-          lastFullRedraw.current = 0;
-        }
-        lastFrameTime.current = performance.now();
-        drawFrame(performance.now());
-      }, delay);
-      return () => {
-        running = false;
-        clearInterval(intervalId);
-      };
-    }
-
-    rafRef.current = requestAnimationFrame(loop);
-
-    return () => {
-      running = false;
-      cancelAnimationFrame(rafRef.current);
-      rafRef.current = 0;
-    };
-  }, [drawFrame, prefersReducedMotion]);
+  useRenderLoop({
+    draw: drawFrame,
+    prefersReducedMotion,
+    isVisible,
+    onResumeAfterHidden: handleResumeAfterHidden,
+  });
 
   return (
     <div ref={containerRef} className="relative w-full">
