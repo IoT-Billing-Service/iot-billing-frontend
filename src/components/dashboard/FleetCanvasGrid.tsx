@@ -2,6 +2,7 @@
 
 import { useRef, useEffect, useCallback, useMemo, useState } from 'react';
 import { useTheme } from '@/components/providers/ThemeProvider';
+import { monoCharWidth, truncateToWidth } from '@/utils/canvasText';
 import type { FleetView } from '@/types';
 import type { PositionResult } from '@/workers/fleetPosition.worker';
 
@@ -315,9 +316,17 @@ export function FleetCanvasGrid({ fleets, cellSize = 80 }: FleetCanvasGridProps)
 
       ctx.strokeStyle = color;
 
+      // Available text width inside a cell: from the 6px left inset to the
+      // cell's right border, minus a small right inset. Labels are clipped to
+      // this so they never overflow into the adjacent cell (issue #71).
+      const maxTextWidth = Math.max(0, currentCellSize - 12);
+
       // Pass 1: Borders and main text fields (using bold 10px monospace)
       ctx.fillStyle = color;
       ctx.font = isAggregated ? 'bold 12px monospace' : 'bold 10px monospace';
+      // Monospace glyphs share one advance width: measure once per font, then
+      // truncation is exact integer arithmetic (no per-label measureText).
+      const headCharWidth = monoCharWidth(ctx);
 
       list.forEach(({ cell, fleet, isHovered }) => {
         ctx.lineWidth = isHovered ? 2 : 1;
@@ -327,7 +336,11 @@ export function FleetCanvasGrid({ fleets, cellSize = 80 }: FleetCanvasGridProps)
         const textYOffset = isAggregated ? 18 : 14;
         const lineSpacing = isAggregated ? 16 : 14;
 
-        ctx.fillText(fleet.name.slice(0, isAggregated ? 12 : 8), cell.x + 6, cell.y + textYOffset);
+        ctx.fillText(
+          truncateToWidth(fleet.name, maxTextWidth, headCharWidth),
+          cell.x + 6,
+          cell.y + textYOffset,
+        );
 
         // Count string
         const countText =
@@ -335,11 +348,16 @@ export function FleetCanvasGrid({ fleets, cellSize = 80 }: FleetCanvasGridProps)
             ? `${fleet.fleetCount} fleets`
             : `${fleet.activeCount}/${fleet.deviceCount}`;
 
-        ctx.fillText(countText, cell.x + 6, cell.y + textYOffset + lineSpacing);
+        ctx.fillText(
+          truncateToWidth(countText, maxTextWidth, headCharWidth),
+          cell.x + 6,
+          cell.y + textYOffset + lineSpacing,
+        );
       });
 
       // Pass 2: Secondary text fields (using 9px monospace to avoid canvas state font changes)
       ctx.font = isAggregated ? '11px monospace' : '9px monospace';
+      const subCharWidth = monoCharWidth(ctx);
       list.forEach(({ cell, fleet }) => {
         const textYOffset = isAggregated ? 18 : 14;
         const lineSpacing = isAggregated ? 16 : 14;
@@ -349,12 +367,20 @@ export function FleetCanvasGrid({ fleets, cellSize = 80 }: FleetCanvasGridProps)
           subText = `${(fleet.totalPowerOutput / 1000).toFixed(1)}kW`;
         }
 
-        ctx.fillText(subText, cell.x + 6, cell.y + textYOffset + lineSpacing * 2);
+        ctx.fillText(
+          truncateToWidth(subText, maxTextWidth, subCharWidth),
+          cell.x + 6,
+          cell.y + textYOffset + lineSpacing * 2,
+        );
 
         if (isAggregated) {
           ctx.fillStyle = '#8b9bb4';
           ctx.fillText(
-            `${fleet.activeCount}/${fleet.deviceCount} dev`,
+            truncateToWidth(
+              `${fleet.activeCount}/${fleet.deviceCount} dev`,
+              maxTextWidth,
+              subCharWidth,
+            ),
             cell.x + 6,
             cell.y + textYOffset + lineSpacing * 3,
           );
