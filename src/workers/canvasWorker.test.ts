@@ -28,7 +28,7 @@ function* chunkBuffer(buf: Float64Array): Generator<Float64Array> {
 }
 
 describe('canvasWorker chunked transfer', () => {
-  let mockPostMessage: ReturnType<typeof vi.fn>;
+  let mockPostMessage: ReturnType<typeof vi.fn<(message: unknown, transfer?: Transferable[]) => void>>;
 
   beforeEach(() => {
     mockPostMessage = vi.fn();

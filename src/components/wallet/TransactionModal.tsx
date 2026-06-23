@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useWallet } from '@/components/providers/WalletProvider';
 import { ErrorDecoder } from '@/utils/errorDecoder';
 import { useTxRetryQueue } from '@/hooks/useTxRetryQueue';
@@ -8,9 +8,32 @@ import { TxStatusList } from './TxStatusPill';
 import { GasEstimator } from './GasEstimator';
 import { useGasEstimate } from '@/hooks/useGasEstimate';
 
+// ── sessionStorage key for restore-on-spurious-close ─────────────────────────
+const SESSION_KEY = 'txModal:saved';
+
+interface SavedModal {
+  type: 'escrow_deposit' | 'escrow_withdrawal';
+  contractId: string;
+  asset: string;
+  amount: string;
+}
+
+function saveToSession(data: SavedModal) {
+  try { sessionStorage.setItem(SESSION_KEY, JSON.stringify(data)); } catch { /* quota */ }
+}
+function clearSession() {
+  try { sessionStorage.removeItem(SESSION_KEY); } catch { /* noop */ }
+}
+export function loadSavedModal(): SavedModal | null {
+  try {
+    const raw = sessionStorage.getItem(SESSION_KEY);
+    return raw ? (JSON.parse(raw) as SavedModal) : null;
+  } catch { return null; }
+}
+
+// ── ErrorBanner ───────────────────────────────────────────────────────────────
 function ErrorBanner({ decoded, raw }: { decoded: string; raw: string }) {
   const [expanded, setExpanded] = useState(false);
-
   return (
     <div className="mt-3 rounded bg-red-900/30 p-2 text-xs text-red-400">
       <div>{decoded}</div>
@@ -29,6 +52,7 @@ function ErrorBanner({ decoded, raw }: { decoded: string; raw: string }) {
   );
 }
 
+// ── Props ─────────────────────────────────────────────────────────────────────
 interface TransactionModalProps {
   type: 'escrow_deposit' | 'escrow_withdrawal';
   contractId: string;
@@ -39,6 +63,7 @@ interface TransactionModalProps {
 
 const errorDecoder = new ErrorDecoder();
 
+// ── Component ─────────────────────────────────────────────────────────────────
 export function TransactionModal({
   type,
   contractId,
@@ -51,33 +76,87 @@ export function TransactionModal({
   const [submitting, setSubmitting] = useState(false);
   const [txError, setTxError] = useState<{ decoded: string; raw: string } | null>(null);
 
-  const {
-    feeBreakdown,
-    estimating,
-    simulationError,
-    estimate: estimateGas,
-    reset: resetGasEstimate,
-  } = useGasEstimate();
-
-  // Initialize retry queue with persistence
+  const { feeBreakdown, estimating, simulationError, estimate: estimateGas, reset: resetGasEstimate } = useGasEstimate();
   const { pendingTransactions, enqueue, clearCompleted } = useTxRetryQueue(10, 'escrow-queue');
-
   const isDeposit = type === 'escrow_deposit';
 
+  // ── popstate guard refs ───────────────────────────────────────────────────
+  // Tracks the timestamp of the last replaceState call so the popstate handler
+  // can distinguish a spurious programmatic event from a real user navigation.
+  const lastReplaceStateTs = useRef(0);
+  // Set to true just before replaceState; cleared after 50 ms.
+  const expectingPopstate = useRef(false);
+  const expectingTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // ── URL sync via replaceState (NOT pushState) ─────────────────────────────
+  // replaceState does NOT fire popstate on any browser, eliminating the
+  // spurious-popstate bug. pushState is only used by explicit user navigation.
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    url.searchParams.set('txModal', contractId);
+    url.searchParams.set('txType', type);
+
+    // Guard: mark that we are about to call replaceState so the popstate
+    // handler can recognise any edge-case browser that fires anyway.
+    expectingPopstate.current = true;
+    lastReplaceStateTs.current = Date.now();
+    if (expectingTimer.current) clearTimeout(expectingTimer.current);
+    expectingTimer.current = setTimeout(() => {
+      expectingPopstate.current = false;
+    }, 50);
+
+    window.history.replaceState({ txModal: contractId, txType: type }, '', url.toString());
+
+    // Persist to sessionStorage so the user can restore if spuriously closed
+    saveToSession({ type, contractId, asset, amount });
+
+    return () => {
+      // Remove modal params from URL on unmount
+      const cleanUrl = new URL(window.location.href);
+      cleanUrl.searchParams.delete('txModal');
+      cleanUrl.searchParams.delete('txType');
+      window.history.replaceState(null, '', cleanUrl.toString());
+      clearSession();
+      if (expectingTimer.current) clearTimeout(expectingTimer.current);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [contractId, type]);
+
+  // Keep sessionStorage in sync when amount changes
+  useEffect(() => {
+    saveToSession({ type, contractId, asset, amount });
+  }, [amount, type, contractId, asset]);
+
+  // ── popstate handler ──────────────────────────────────────────────────────
+  useEffect(() => {
+    const handlePopstate = (e: PopStateEvent) => {
+      // Guard 1: expectingPopstate — we just called replaceState/pushState
+      // programmatically; ignore this event.
+      if (expectingPopstate.current) return;
+
+      // Guard 2: timestamp delta — Chrome Android can fire popstate within
+      // a few ms of a replaceState call. If < 100 ms since last call, ignore.
+      if (Date.now() - lastReplaceStateTs.current < 100) return;
+
+      // Guard 3: if the new history state still contains txModal, this is
+      // a forward navigation back into the modal — don't close.
+      if ((e.state as { txModal?: string } | null)?.txModal === contractId) return;
+
+      // Genuine user back-navigation: close the modal.
+      onClose();
+    };
+
+    window.addEventListener('popstate', handlePopstate);
+    return () => window.removeEventListener('popstate', handlePopstate);
+  }, [contractId, onClose]);
+
+  // ── handlers ──────────────────────────────────────────────────────────────
   const handleEstimateGas = async () => {
     if (!amount || !metrics?.publicKey) return;
-    await estimateGas({
-      contractId,
-      amount,
-      asset,
-      publicKey: metrics.publicKey,
-      operation: type,
-    });
+    await estimateGas({ contractId, amount, asset, publicKey: metrics.publicKey, operation: type });
   };
 
-  useEffect(() => {
-    resetGasEstimate();
-  }, [amount, resetGasEstimate]);
+  useEffect(() => { resetGasEstimate(); }, [amount, resetGasEstimate]);
 
   const handleSubmit = async () => {
     if (!amount || !metrics?.publicKey) return;
@@ -87,27 +166,13 @@ export function TransactionModal({
       const response = await fetch(`/api/escrow/${isDeposit ? 'deposit' : 'withdraw'}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contractId,
-          amount,
-          asset,
-          publicKey: metrics.publicKey,
-        }),
+        body: JSON.stringify({ contractId, amount, asset, publicKey: metrics.publicKey }),
       });
       if (response.ok) {
         const data = await response.json();
         const hash = data.hash as string;
-
-        // Add to retry queue with deduplication
-        await enqueue({
-          hash,
-          contractId,
-          amount,
-          asset,
-          publicKey: metrics.publicKey,
-          type,
-        });
-
+        await enqueue({ hash, contractId, amount, asset, publicKey: metrics.publicKey, type });
+        clearSession();
         onComplete?.(hash);
       } else {
         const errData = await response.json().catch(() => ({}));
@@ -123,12 +188,15 @@ export function TransactionModal({
   };
 
   const handleClearCompleted = async () => {
-    const count = await clearCompleted();
-    console.log(`Cleared ${count} completed transactions`);
+    await clearCompleted();
   };
 
+  // ── render ─────────────────────────────────────────────────────────────────
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
+      data-testid="transaction-modal"
+    >
       <div className="w-full max-w-md rounded-lg border border-gray-700 bg-gray-900 p-6">
         <h3 className="text-lg font-semibold text-white">
           {isDeposit ? 'Deposit to Escrow' : 'Withdraw from Escrow'}
@@ -155,22 +223,14 @@ export function TransactionModal({
             {estimating ? 'Estimating...' : 'Estimate Gas Fee'}
           </button>
 
-          <GasEstimator
-            feeBreakdown={feeBreakdown}
-            estimating={estimating}
-            error={simulationError}
-          />
+          <GasEstimator feeBreakdown={feeBreakdown} estimating={estimating} error={simulationError} />
         </div>
 
         {txError && <ErrorBanner decoded={txError.decoded} raw={txError.raw} />}
 
-        {/* Transaction Status Display */}
         {pendingTransactions.length > 0 && (
           <div className="mt-4">
-            <TxStatusList
-              transactions={pendingTransactions}
-              onClearCompleted={handleClearCompleted}
-            />
+            <TxStatusList transactions={pendingTransactions} onClearCompleted={handleClearCompleted} />
           </div>
         )}
 

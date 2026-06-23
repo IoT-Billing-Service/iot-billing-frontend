@@ -2,6 +2,7 @@
 
 import dynamic from 'next/dynamic';
 import { useWallet } from '@/components/providers/WalletProvider';
+import { RestoreTransactionBanner } from '@/components/wallet/RestoreTransactionBanner';
 
 /**
  * TelemetryChart is a canvas-only component that uses requestAnimationFrame
@@ -44,6 +45,7 @@ export default function DashboardPage() {
 
   return (
     <div className="space-y-6">
+      <RestoreTransactionBanner />
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-4">
         <div className="rounded-lg border border-gray-700 bg-gray-900 p-4">
           <p className="text-xs text-gray-400">Active Devices</p>
