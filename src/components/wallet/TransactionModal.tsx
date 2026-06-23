@@ -59,7 +59,13 @@ export function TransactionModal({
   const submittingRef = useRef(false);
   const { markDirty, markClean } = useFormTracker();
   const formId = `${type}-${contractId}`;
-  const transactionIdRef = useRef(`${type}-${contractId}-${Date.now()}`);
+  const transactionIdRef = useRef<string>();
+  // Initialize transaction ID in useEffect (not during render)
+  useEffect(() => {
+    if (!transactionIdRef.current) {
+      transactionIdRef.current = `${type}-${contractId}-${Date.now()}`;
+    }
+  }, [type, contractId]);
 
   const {
     feeBreakdown,
@@ -98,11 +104,13 @@ export function TransactionModal({
   }, [amount, formId, markDirty, markClean]);
 
   useEffect(() => {
-    localStorage.setItem('active_transaction_id', transactionIdRef.current);
+    if (!transactionIdRef.current) return;
+    const txId = transactionIdRef.current;
+    localStorage.setItem('active_transaction_id', txId);
     if (navigator.serviceWorker.controller) {
       navigator.serviceWorker.controller.postMessage({
         type: 'ACQUIRE_TX_LOCK',
-        tx_id: transactionIdRef.current,
+        tx_id: txId,
       });
     }
     return () => {
@@ -111,7 +119,7 @@ export function TransactionModal({
       if (navigator.serviceWorker.controller) {
         navigator.serviceWorker.controller.postMessage({
           type: 'RELEASE_TX_LOCK',
-          tx_id: transactionIdRef.current,
+          tx_id: txId,
         });
       }
     };
@@ -120,6 +128,8 @@ export function TransactionModal({
   const handleSubmit = async () => {
     if (!amount || !metrics?.publicKey) return;
     if (submittingRef.current) return; // already in flight — ignore re-entrant submits
+    if (!transactionIdRef.current) return;
+    const txId = transactionIdRef.current;
     submittingRef.current = true;
     setSubmitting(true);
     setTxError(null);
@@ -166,7 +176,7 @@ export function TransactionModal({
       if (navigator.serviceWorker.controller) {
         navigator.serviceWorker.controller.postMessage({
           type: 'RELEASE_TX_LOCK',
-          tx_id: transactionIdRef.current,
+          tx_id: txId,
         });
       }
     }
