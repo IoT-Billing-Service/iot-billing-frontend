@@ -30,9 +30,7 @@ export function ServiceWorkerRegister() {
               newWorker.addEventListener('statechange', () => {
                 if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
                   localStorage.setItem('NEW_SW_PENDING', 'true');
-                  const event = new CustomEvent('sw-update-available', {
-                    detail: { registration },
-                  });
+                  const event = new CustomEvent('sw-update-available', { detail: { registration } });
                   window.dispatchEvent(event);
                 }
               });
