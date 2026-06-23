@@ -1,6 +1,7 @@
 'use client';
 
-import { useRef, useEffect, useCallback, useState } from 'react';
+import { useRef, useEffect, useCallback, useMemo, useState } from 'react';
+import { useTheme } from '@/components/providers/ThemeProvider';
 import type { FleetView } from '@/types';
 import type { PositionResult } from '@/workers/fleetPosition.worker';
 
@@ -46,6 +47,8 @@ export function FleetCanvasGrid({ fleets, cellSize = 80 }: FleetCanvasGridProps)
   const containerRef = useRef<HTMLDivElement>(null);
   const workerRef = useRef<Worker | null>(null);
 
+  const { mode } = useTheme();
+
   const [zoomLevel, setZoomLevel] = useState(1.0);
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
   const [visibleCells, setVisibleCells] = useState<PositionResult[]>([]);
@@ -56,13 +59,24 @@ export function FleetCanvasGrid({ fleets, cellSize = 80 }: FleetCanvasGridProps)
     yMax: 1000,
   });
 
-  // Memory estimation & check
-  const memoryUsage = estimateGridMemory(fleets);
+  // Theme-aware status colours, cached and only re-resolved from CSS custom
+  // properties when the theme changes — not on every canvas redraw, since
+  // getComputedStyle forces a style recalc that is wasteful in the draw loop.
+  const themeColorsRef = useRef({
+    active: '#5ec962',
+    warning: '#fca50a',
+    critical: '#dd513a',
+  });
+  const resolvedModeRef = useRef<string | null>(null);
+
+  // Memory estimation & check — JSON.stringify of the full fleet array is
+  // expensive, so only recompute when the fleets reference changes.
+  const memoryUsage = useMemo(() => estimateGridMemory(fleets), [fleets]);
   const isMemoryExceeded = memoryUsage > MEMORY_LIMIT;
   const isAggregated = zoomLevel < 0.5 || isMemoryExceeded;
 
   // Aggregate fleets if in cluster/aggregate mode
-  const displayData = useCallback((): DisplayFleet[] => {
+  const activeFleets = useMemo<DisplayFleet[]>(() => {
     if (!isAggregated) {
       return fleets;
     }
@@ -122,7 +136,6 @@ export function FleetCanvasGrid({ fleets, cellSize = 80 }: FleetCanvasGridProps)
     });
   }, [fleets, isAggregated]);
 
-  const activeFleets = displayData();
   const currentCellSize = isAggregated ? cellSize * 1.5 : cellSize * zoomLevel;
 
   const cols = Math.ceil(Math.sqrt(activeFleets.length)) || 1;
@@ -243,11 +256,20 @@ export function FleetCanvasGrid({ fleets, cellSize = 80 }: FleetCanvasGridProps)
     ctx.fillStyle = '#1a1a2e';
     ctx.fillRect(xMin, yMin, xMax - xMin, yMax - yMin);
 
-    // Resolve theme-aware status colours from CSS custom properties
-    const style = getComputedStyle(canvas);
-    const activeColor = style.getPropertyValue('--chart-active').trim() || '#5ec962';
-    const warningColor = style.getPropertyValue('--chart-warning').trim() || '#fca50a';
-    const criticalColor = style.getPropertyValue('--chart-critical').trim() || '#dd513a';
+    // Re-resolve theme-aware status colours only when the theme has changed,
+    // keeping getComputedStyle out of the steady-state per-frame draw path.
+    if (resolvedModeRef.current !== mode) {
+      const style = getComputedStyle(canvas);
+      themeColorsRef.current = {
+        active: style.getPropertyValue('--chart-active').trim() || '#5ec962',
+        warning: style.getPropertyValue('--chart-warning').trim() || '#fca50a',
+        critical: style.getPropertyValue('--chart-critical').trim() || '#dd513a',
+      };
+      resolvedModeRef.current = mode;
+    }
+    const activeColor = themeColorsRef.current.active;
+    const warningColor = themeColorsRef.current.warning;
+    const criticalColor = themeColorsRef.current.critical;
 
     // Group cells by status color to minimize fillStyle/strokeStyle context changes
     const cellsByColor: Record<
@@ -349,6 +371,7 @@ export function FleetCanvasGrid({ fleets, cellSize = 80 }: FleetCanvasGridProps)
     height,
     viewportBounds,
     isAggregated,
+    mode,
   ]);
 
   useEffect(() => {
