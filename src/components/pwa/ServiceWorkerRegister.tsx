@@ -1,18 +1,25 @@
 'use client';
 
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
+import { useFormTracker } from '@/stores/useFormTracker';
 
 export function ServiceWorkerRegister() {
+  const { hasDirtyForms } = useFormTracker();
+  const registrationRef = useRef<ServiceWorkerRegistration | null>(null);
+
   useEffect(() => {
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker
         .register('/sw.js')
         .then((registration) => {
+          registrationRef.current = registration;
+
           registration.addEventListener('updatefound', () => {
             const newWorker = registration.installing;
             if (newWorker) {
               newWorker.addEventListener('statechange', () => {
                 if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
+                  localStorage.setItem('NEW_SW_PENDING', 'true');
                   const event = new CustomEvent('sw-update-available', {
                     detail: { registration },
                   });
@@ -21,10 +28,30 @@ export function ServiceWorkerRegister() {
               });
             }
           });
+
+          // Check for pending SW on mount
+          checkAndActivateSW(registration);
         })
         .catch(() => {});
     }
   }, []);
+
+  // Check for pending SW whenever hasDirtyForms changes
+  useEffect(() => {
+    if (registrationRef.current) {
+      checkAndActivateSW(registrationRef.current);
+    }
+  }, [hasDirtyForms]);
+
+  const checkAndActivateSW = (registration: ServiceWorkerRegistration) => {
+    const pending = localStorage.getItem('NEW_SW_PENDING') === 'true';
+    if (pending && registration.waiting) {
+      if (!hasDirtyForms() && !localStorage.getItem('active_transaction_id')) {
+        registration.waiting.postMessage({ type: 'SKIP_WAITING' });
+        localStorage.removeItem('NEW_SW_PENDING');
+      }
+    }
+  };
 
   return null;
 }

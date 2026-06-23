@@ -59,6 +59,7 @@ export function TransactionModal({
   const submittingRef = useRef(false);
   const { markDirty, markClean } = useFormTracker();
   const formId = `${type}-${contractId}`;
+  const transactionIdRef = useRef(`${type}-${contractId}-${Date.now()}`);
 
   const {
     feeBreakdown,
@@ -97,8 +98,22 @@ export function TransactionModal({
   }, [amount, formId, markDirty, markClean]);
 
   useEffect(() => {
+    localStorage.setItem('active_transaction_id', transactionIdRef.current);
+    if (navigator.serviceWorker.controller) {
+      navigator.serviceWorker.controller.postMessage({
+        type: 'ACQUIRE_TX_LOCK',
+        tx_id: transactionIdRef.current,
+      });
+    }
     return () => {
       markClean(formId);
+      localStorage.removeItem('active_transaction_id');
+      if (navigator.serviceWorker.controller) {
+        navigator.serviceWorker.controller.postMessage({
+          type: 'RELEASE_TX_LOCK',
+          tx_id: transactionIdRef.current,
+        });
+      }
     };
   }, [formId, markClean]);
 
@@ -146,6 +161,14 @@ export function TransactionModal({
     } finally {
       setSubmitting(false);
       submittingRef.current = false;
+      // Release transaction lock after submission
+      localStorage.removeItem('active_transaction_id');
+      if (navigator.serviceWorker.controller) {
+        navigator.serviceWorker.controller.postMessage({
+          type: 'RELEASE_TX_LOCK',
+          tx_id: transactionIdRef.current,
+        });
+      }
     }
   };
 

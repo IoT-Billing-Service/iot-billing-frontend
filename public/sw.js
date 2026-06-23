@@ -2,6 +2,9 @@ const CACHE_VERSION = 'v1';
 const STATIC_CACHE = `iot-billing-static-${CACHE_VERSION}`;
 const DYNAMIC_CACHE = `iot-billing-dynamic-${CACHE_VERSION}`;
 const API_CACHE = `iot-billing-api-${CACHE_VERSION}`;
+const CACHE_GRACE_PERIOD_MS = 10000; // 10 seconds
+
+let activeTransactionLock = null;
 
 const PRECACHE_URLS = [
   '/',
@@ -17,7 +20,7 @@ self.addEventListener('install', (event) => {
       return cache.addAll(PRECACHE_URLS);
     })
   );
-  self.skipWaiting();
+  // Don't skipWaiting automatically anymore
 });
 
 self.addEventListener('activate', (event) => {
@@ -26,13 +29,42 @@ self.addEventListener('activate', (event) => {
       return Promise.all(
         cacheNames
           .filter((name) => {
-            return name !== STATIC_CACHE && name !== DYNAMIC_CACHE && name !== API_CACHE;
+            return (
+              name !== STATIC_CACHE &&
+              name !== DYNAMIC_CACHE &&
+              name !== API_CACHE &&
+              !name.includes('-deprecated')
+            );
           })
-          .map((name) => caches.delete(name))
+          .map((name) => {
+            const deprecatedName = `${name}-deprecated`;
+            return caches.open(name).then((cache) => {
+              return caches.open(deprecatedName).then((deprecatedCache) => {
+                return cache.keys().then((keys) => {
+                  return Promise.all(keys.map((key) => cache.match(key).then((res) => res && deprecatedCache.put(key, res))));
+                }).then(() => caches.delete(name));
+              });
+            }).then(() => {
+              // Delete deprecated cache after grace period
+              setTimeout(() => caches.delete(deprecatedName), CACHE_GRACE_PERIOD_MS);
+            });
+          })
       );
     })
   );
   self.clients.claim();
+});
+
+self.addEventListener('message', (event) => {
+  if (event.data && event.data.type === 'SKIP_WAITING') {
+    self.skipWaiting();
+  } else if (event.data && event.data.type === 'ACQUIRE_TX_LOCK') {
+    activeTransactionLock = event.data.tx_id;
+  } else if (event.data && event.data.type === 'RELEASE_TX_LOCK') {
+    if (activeTransactionLock === event.data.tx_id) {
+      activeTransactionLock = null;
+    }
+  }
 });
 
 self.addEventListener('fetch', (event) => {
