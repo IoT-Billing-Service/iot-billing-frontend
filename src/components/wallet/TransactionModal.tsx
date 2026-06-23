@@ -7,6 +7,7 @@ import { useTxRetryQueue } from '@/hooks/useTxRetryQueue';
 import { TxStatusList } from './TxStatusPill';
 import { GasEstimator } from './GasEstimator';
 import { useGasEstimate } from '@/hooks/useGasEstimate';
+import { useFormTracker } from '@/stores/useFormTracker';
 
 function ErrorBanner({ decoded, raw }: { decoded: string; raw: string }) {
   const [expanded, setExpanded] = useState(false);
@@ -56,6 +57,8 @@ export function TransactionModal({
   // `disabled` condition staying correct — defense-in-depth for a money-moving
   // action against future non-discrete or programmatic invocation paths.
   const submittingRef = useRef(false);
+  const { markDirty, markClean } = useFormTracker();
+  const formId = `${type}-${contractId}`;
 
   const {
     feeBreakdown,
@@ -85,12 +88,27 @@ export function TransactionModal({
     resetGasEstimate();
   }, [amount, resetGasEstimate]);
 
+  useEffect(() => {
+    if (amount) {
+      markDirty(formId);
+    } else {
+      markClean(formId);
+    }
+  }, [amount, formId, markDirty, markClean]);
+
+  useEffect(() => {
+    return () => {
+      markClean(formId);
+    };
+  }, [formId, markClean]);
+
   const handleSubmit = async () => {
     if (!amount || !metrics?.publicKey) return;
     if (submittingRef.current) return; // already in flight — ignore re-entrant submits
     submittingRef.current = true;
     setSubmitting(true);
     setTxError(null);
+    markClean(formId);
     try {
       const response = await fetch(`/api/escrow/${isDeposit ? 'deposit' : 'withdraw'}`, {
         method: 'POST',
