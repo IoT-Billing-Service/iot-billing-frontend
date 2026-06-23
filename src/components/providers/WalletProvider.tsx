@@ -17,6 +17,7 @@ import {
 } from '@stellar/freighter-api';
 import type { WalletMetrics, AssetBalance } from '@/types';
 import { cacheDelete } from '@/services/indexedDbCache';
+import { useLatestRequest } from '@/hooks/useLatestRequest';
 
 interface WalletContextValue {
   metrics: WalletMetrics | null;
@@ -55,6 +56,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
   const generationRef = useRef(0);
   const publicKeyRef = useRef<string | null>(null);
   const disconnectCallbackRef = useRef<(() => void) | null>(null);
+  const balanceRequest = useLatestRequest<AssetBalance[]>();
 
   // Instant wallet disconnection detection using WatchWalletChanges
   useEffect(() => {
@@ -113,13 +115,24 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     };
   }, [queryClient]);
 
-  const refreshBalances = useCallback(async (pk: string) => {
-    const response = await fetch(`/api/wallet/balances?publicKey=${pk}`);
-    if (response.ok) {
-      const balances: AssetBalance[] = await response.json();
-      setMetrics((prev) => (prev ? { ...prev, balances } : null));
-    }
-  }, []);
+  const { run: runBalanceRequest } = balanceRequest;
+  const refreshBalances = useCallback(
+    async (pk: string) => {
+      // Race-safe: concurrent refreshes abort the previous request, so an older
+      // (slower) balances response can never overwrite a newer one.
+      const balances = await runBalanceRequest(async (signal) => {
+        const response = await fetch(`/api/wallet/balances?publicKey=${pk}`, { signal });
+        if (!response.ok) {
+          throw new Error(`Failed to fetch balances: ${response.status}`);
+        }
+        return (await response.json()) as AssetBalance[];
+      });
+      if (balances) {
+        setMetrics((prev) => (prev ? { ...prev, balances } : null));
+      }
+    },
+    [runBalanceRequest],
+  );
 
   const connect = useCallback(async () => {
     const controller = new AbortController();
