@@ -68,7 +68,7 @@ describe('useCurrencyPref', () => {
     expect(state.pendingQueue[0]).toEqual({ deviceId: 'd1', amount: '100' });
   });
 
-  it('setUserInteracting(false) flushes queue', () => {
+  it('setUserInteracting(false) preserves the queue for the hook to deliver', () => {
     // Reset state
     useCurrencyPref.setState({
       currency: 'USD',
@@ -80,13 +80,14 @@ describe('useCurrencyPref', () => {
       ],
     });
 
-    // End interaction — should trigger flush inside setUserInteracting
+    // End interaction — the store must NOT clear the queue itself. The
+    // billing-stream hook delivers the queued updates to its handler first and
+    // only then calls flushPendingQueue. Clearing here would drop them.
     useCurrencyPref.getState().setUserInteracting(false);
 
     const state = useCurrencyPref.getState();
     expect(state.isUserInteracting).toBe(false);
-    // After flushPendingQueue, queue should be empty
-    expect(state.pendingQueue).toHaveLength(0);
+    expect(state.pendingQueue).toHaveLength(2);
   });
 
   it('flushPendingQueue clears queue', () => {

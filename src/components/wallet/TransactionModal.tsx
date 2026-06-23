@@ -75,6 +75,12 @@ export function TransactionModal({
   const [amount, setAmount] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [txError, setTxError] = useState<{ decoded: string; raw: string } | null>(null);
+  // Synchronous in-flight guard. The disabled button already blocks
+  // click-driven double-submits (React flushes discrete events synchronously),
+  // but this makes the protection independent of render timing and of the
+  // `disabled` condition staying correct — defense-in-depth for a money-moving
+  // action against future non-discrete or programmatic invocation paths.
+  const submittingRef = useRef(false);
 
   const { feeBreakdown, estimating, simulationError, estimate: estimateGas, reset: resetGasEstimate } = useGasEstimate();
   const { pendingTransactions, enqueue, clearCompleted } = useTxRetryQueue(10, 'escrow-queue');
@@ -160,6 +166,8 @@ export function TransactionModal({
 
   const handleSubmit = async () => {
     if (!amount || !metrics?.publicKey) return;
+    if (submittingRef.current) return; // already in flight — ignore re-entrant submits
+    submittingRef.current = true;
     setSubmitting(true);
     setTxError(null);
     try {
@@ -184,6 +192,7 @@ export function TransactionModal({
       setTxError({ decoded: errorDecoder.tryDecode(raw), raw });
     } finally {
       setSubmitting(false);
+      submittingRef.current = false;
     }
   };
 

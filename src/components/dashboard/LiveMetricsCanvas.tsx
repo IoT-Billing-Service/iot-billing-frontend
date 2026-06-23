@@ -2,6 +2,7 @@
 
 import { useRef, useEffect, useCallback } from 'react';
 import { useTheme } from '@/components/providers/ThemeProvider';
+import { FrameBudgetMonitor, decimationStride, type FrameBudgetReport } from '@/utils/frameBudget';
 
 interface MetricsFrame {
   timestamp: number;

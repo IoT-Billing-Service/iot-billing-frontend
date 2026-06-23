@@ -29,19 +29,23 @@ export function useBillingStream(handler: BillingUpdateHandler) {
   }, [handler]);
 
   const isUserInteracting = useCurrencyPref((s) => s.isUserInteracting);
-  const queueTelemetryUpdate = useCurrencyPref((s) => s.queueTelemetryUpdate);
   const flushPendingQueue = useCurrencyPref((s) => s.flushPendingQueue);
   const pendingQueue = useCurrencyPref((s) => s.pendingQueue);
 
+  // Open the billing socket once, on mount. Interaction state is read via
+  // getState() inside onmessage rather than subscribed as an effect dependency,
+  // so toggling the currency selector does NOT tear the socket down and
+  // reconnect it (which would drop any messages arriving in the reconnect gap).
   useEffect(() => {
     const ws = new WebSocket('/api/billing/stream');
 
     ws.onmessage = (event) => {
       try {
         const update: BillingUpdate = JSON.parse(event.data);
+        const { isUserInteracting: interacting, queueTelemetryUpdate } = useCurrencyPref.getState();
 
-        if (isUserInteracting) {
-          // Queue the update — will be flushed when interaction ends
+        if (interacting) {
+          // Queue the update — delivered when interaction ends (see below)
           queueTelemetryUpdate({ deviceId: update.deviceId, amount: update.amount });
         } else {
           handlerRef.current([update]);
@@ -58,9 +62,11 @@ export function useBillingStream(handler: BillingUpdateHandler) {
     return () => {
       ws.close();
     };
-  }, [isUserInteracting, queueTelemetryUpdate]);
+  }, []);
 
-  // When interaction ends and queue has data, flush it atomically
+  // When interaction ends, deliver the queued updates to the handler and THEN
+  // clear the queue. The store no longer clears it on interaction end, so the
+  // updates survive long enough to be delivered here (fixes silent data loss).
   useEffect(() => {
     if (!isUserInteracting && pendingQueue.length > 0) {
       const queuedUpdates: BillingUpdate[] = pendingQueue.map((q) => ({
