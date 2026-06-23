@@ -7,15 +7,21 @@ export function ServiceWorkerRegister() {
   const { hasDirtyForms } = useFormTracker();
   const registrationRef = useRef<ServiceWorkerRegistration | null>(null);
 
-  const checkAndActivateSW = useCallback((registration: ServiceWorkerRegistration) => {
-    const pending = localStorage.getItem('NEW_SW_PENDING') === 'true';
-    if (pending && registration.waiting) {
-      if (!hasDirtyForms() && !localStorage.getItem('active_transaction_id')) {
-        registration.waiting.postMessage({ type: 'SKIP_WAITING' });
-        localStorage.removeItem('NEW_SW_PENDING');
+  const checkAndActivateSW = useCallback(
+    (registration: ServiceWorkerRegistration) => {
+      const pending = localStorage.getItem('NEW_SW_PENDING') === 'true';
+      if (pending && registration.waiting) {
+        if (
+          !hasDirtyForms() &&
+          !localStorage.getItem('active_transaction_id')
+        ) {
+          registration.waiting.postMessage({ type: 'SKIP_WAITING' });
+          localStorage.removeItem('NEW_SW_PENDING');
+        }
       }
-    }
-  }, [hasDirtyForms]);
+    },
+    [hasDirtyForms]
+  );
 
   useEffect(() => {
     if ('serviceWorker' in navigator) {
@@ -28,7 +34,10 @@ export function ServiceWorkerRegister() {
             const newWorker = registration.installing;
             if (newWorker) {
               newWorker.addEventListener('statechange', () => {
-                if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
+                if (
+                  newWorker.state === 'installed' &&
+                  navigator.serviceWorker.controller
+                ) {
                   localStorage.setItem('NEW_SW_PENDING', 'true');
                   const event = new CustomEvent('sw-update-available', {
                     detail: { registration },

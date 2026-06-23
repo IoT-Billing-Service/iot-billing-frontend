@@ -59,7 +59,7 @@ export function TransactionModal({
   const submittingRef = useRef(false);
   const { markDirty, markClean } = useFormTracker();
   const formId = `${type}-${contractId}`;
-  const transactionIdRef = useRef<string>();
+  const transactionIdRef = useRef<string | undefined>(undefined);
   // Initialize transaction ID in useEffect (not during render)
   useEffect(() => {
     if (!transactionIdRef.current) {
