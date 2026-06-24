@@ -20,7 +20,8 @@ import { fileURLToPath } from 'url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = join(__dirname, '..');
-const cssDir = join(root, '.next', 'static', 'css');
+// Next.js App Router emits CSS into .next/static/chunks/, not .next/static/chunks/.
+const cssDir = join(root, '.next', 'static', 'chunks');
 
 /**
  * Every class string that must be present in the production CSS.
@@ -63,13 +64,13 @@ let cssFiles;
 try {
   cssFiles = readdirSync(cssDir).filter((f) => f.endsWith('.css'));
 } catch {
-  console.error('ERROR: No CSS output found at .next/static/css/');
+  console.error('ERROR: No CSS output found at .next/static/chunks/');
   console.error('       Run `npm run build` before validate:css.');
   process.exit(1);
 }
 
 if (cssFiles.length === 0) {
-  console.error('ERROR: No .css files found in .next/static/css/');
+  console.error('ERROR: No .css files found in .next/static/chunks/');
   console.error('       Run `npm run build` before validate:css.');
   process.exit(1);
 }
