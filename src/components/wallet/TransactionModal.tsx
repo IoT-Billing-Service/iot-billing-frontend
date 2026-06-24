@@ -7,6 +7,7 @@ import { useTxRetryQueue } from '@/hooks/useTxRetryQueue';
 import { TxStatusList } from './TxStatusPill';
 import { GasEstimator } from './GasEstimator';
 import { useGasEstimate } from '@/hooks/useGasEstimate';
+import { useFormTracker } from '@/stores/useFormTracker';
 
 // ── sessionStorage key for restore-on-spurious-close ─────────────────────────
 const SESSION_KEY = 'txModal:saved';
@@ -75,6 +76,14 @@ export function TransactionModal({
   const [amount, setAmount] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [txError, setTxError] = useState<{ decoded: string; raw: string } | null>(null);
+  // Synchronous in-flight guard. The disabled button already blocks
+  // click-driven double-submits (React flushes discrete events synchronously),
+  // but this makes the protection independent of render timing and of the
+  // `disabled` condition staying correct — defense-in-depth for a money-moving
+  // action against future non-discrete or programmatic invocation paths.
+  const submittingRef = useRef(false);
+  const { markDirty, markClean } = useFormTracker();
+  const formId = `${type}-${contractId}`;
 
   const { feeBreakdown, estimating, simulationError, estimate: estimateGas, reset: resetGasEstimate } = useGasEstimate();
   const { pendingTransactions, enqueue, clearCompleted } = useTxRetryQueue(10, 'escrow-queue');
@@ -158,10 +167,27 @@ export function TransactionModal({
 
   useEffect(() => { resetGasEstimate(); }, [amount, resetGasEstimate]);
 
+  useEffect(() => {
+    if (amount) {
+      markDirty(formId);
+    } else {
+      markClean(formId);
+    }
+  }, [amount, formId, markDirty, markClean]);
+
+  useEffect(() => {
+    return () => {
+      markClean(formId);
+    };
+  }, [formId, markClean]);
+
   const handleSubmit = async () => {
     if (!amount || !metrics?.publicKey) return;
+    if (submittingRef.current) return; // already in flight — ignore re-entrant submits
+    submittingRef.current = true;
     setSubmitting(true);
     setTxError(null);
+    markClean(formId);
     try {
       const response = await fetch(`/api/escrow/${isDeposit ? 'deposit' : 'withdraw'}`, {
         method: 'POST',
@@ -184,6 +210,7 @@ export function TransactionModal({
       setTxError({ decoded: errorDecoder.tryDecode(raw), raw });
     } finally {
       setSubmitting(false);
+      submittingRef.current = false;
     }
   };
 

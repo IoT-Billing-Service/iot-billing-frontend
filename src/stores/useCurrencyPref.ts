@@ -16,7 +16,7 @@ export interface CurrencyPrefState {
   flushPendingQueue: () => void;
 }
 
-export const useCurrencyPref = create<CurrencyPrefState>((set, get) => ({
+export const useCurrencyPref = create<CurrencyPrefState>((set) => ({
   currency: 'USD',
   currencyVersion: 0,
   isUserInteracting: false,
@@ -30,15 +30,11 @@ export const useCurrencyPref = create<CurrencyPrefState>((set, get) => ({
   },
 
   setUserInteracting(interacting) {
+    // Only toggle the flag here. The queue is intentionally NOT cleared on
+    // interaction end: the billing-stream hook must first deliver the queued
+    // updates to its handler and then call flushPendingQueue(). Clearing here
+    // would drop those updates before the hook could deliver them.
     set({ isUserInteracting: interacting });
-    if (!interacting) {
-      // Flush queued updates atomically when interaction ends
-      const { pendingQueue } = get();
-      if (pendingQueue.length > 0) {
-        // Queue is consumed by the billing stream hook via flushPendingQueue
-        get().flushPendingQueue();
-      }
-    }
   },
 
   queueTelemetryUpdate(update) {

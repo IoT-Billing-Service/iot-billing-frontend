@@ -4,6 +4,7 @@ import './globals.css';
 import { Providers } from '@/components/providers';
 import { PwaInstaller } from '@/components/pwa/PwaInstaller';
 import { ServiceWorkerRegister } from '@/components/pwa/ServiceWorkerRegister';
+import { AppUpdateBanner } from '@/components/AppUpdateBanner';
 
 const geistSans = Geist({
   variable: '--font-geist-sans',
@@ -47,6 +48,7 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
       suppressHydrationWarning
     >
       <body className="min-h-full flex flex-col bg-background text-foreground">
+        <AppUpdateBanner />
         <Providers>{children}</Providers>
         <ServiceWorkerRegister />
         <PwaInstaller />

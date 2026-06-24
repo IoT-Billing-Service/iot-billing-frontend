@@ -2,6 +2,7 @@
 
 import { useRef, useEffect, useCallback, useState } from 'react';
 import { useTheme } from '@/components/providers/ThemeProvider';
+import { useRenderLoop } from '@/hooks/useRenderLoop';
 
 interface TelemetryDataPoint {
   timestamp: number;
@@ -59,9 +60,7 @@ export function TelemetryChart({
   const lastDrawnHead = useRef(0);
   const msgTimestamps = useRef<number[]>([]);
   const workerRef = useRef<Worker | null>(null);
-  const rafRef = useRef(0);
   const prevDataLenRef = useRef(0);
-  const lastFrameTime = useRef(0);
   const isPageVisible = useRef(true);
   const [range, setRange] = useState<{ min: number; max: number }>({ min: 0, max: 1 });
   const [memoryInfo, setMemoryInfo] = useState<string | null>(null);
@@ -324,51 +323,18 @@ export function TelemetryChart({
     ],
   );
 
-  // HEAD: rAF loop with visibility check
-  useEffect(() => {
-    let running = true;
+  // rAF loop with visibility + reduced-motion handling (shared hook).
+  const isVisible = useCallback(() => isPageVisible.current, []);
+  const handleResumeAfterHidden = useCallback(() => {
+    lastFullRedraw.current = 0;
+  }, []);
 
-    const loop = (now: number) => {
-      if (!running) return;
-      if (!isPageVisible.current) {
-        rafRef.current = requestAnimationFrame(loop);
-        return;
-      }
-      if (lastFrameTime.current > 0 && now - lastFrameTime.current > 5000) {
-        lastFullRedraw.current = 0;
-      }
-      lastFrameTime.current = now;
-      draw(now);
-      rafRef.current = requestAnimationFrame(loop);
-    };
-
-    // Respect reduced motion: use a longer interval instead of rAF
-    const delay = prefersReducedMotion ? 250 : 0;
-
-    if (prefersReducedMotion) {
-      const intervalId = setInterval(() => {
-        if (!running) return;
-        if (!isPageVisible.current) return;
-        if (lastFrameTime.current > 0 && performance.now() - lastFrameTime.current > 5000) {
-          lastFullRedraw.current = 0;
-        }
-        lastFrameTime.current = performance.now();
-        draw(performance.now());
-      }, delay);
-      return () => {
-        running = false;
-        clearInterval(intervalId);
-      };
-    }
-
-    rafRef.current = requestAnimationFrame(loop);
-
-    return () => {
-      running = false;
-      cancelAnimationFrame(rafRef.current);
-      rafRef.current = 0;
-    };
-  }, [draw, prefersReducedMotion]);
+  useRenderLoop({
+    draw,
+    prefersReducedMotion,
+    isVisible,
+    onResumeAfterHidden: handleResumeAfterHidden,
+  });
 
   return (
     <div className="relative">

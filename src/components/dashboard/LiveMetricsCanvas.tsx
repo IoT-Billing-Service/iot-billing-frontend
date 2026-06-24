@@ -21,6 +21,14 @@ const CHUNK_SIZE = 4096;
 const RING_CAPACITY = 10_000;
 const FULL_REDRAW_MS = 500;
 const RATE_WARN_THRESHOLD = 3000;
+/**
+ * Hard ceiling on points plotted per metric per frame. Drawing more points
+ * than there are horizontal pixels is wasted work the rasteriser collapses
+ * anyway; the loop additionally caps by canvas width and halves this under
+ * budget pressure (see FrameBudgetMonitor). This is the real fix for the
+ * frame-budget overruns issue #72 is concerned with.
+ */
+const MAX_POINTS_PER_METRIC = 2_000;
 
 /**
  * Hard ceiling on points plotted per metric per frame. Drawing more points
@@ -59,8 +67,12 @@ export function LiveMetricsCanvas({ stream, metrics, height = 300 }: LiveMetrics
   const [memoryInfo, setMemoryInfo] = useState<string | null>(null);
   const [frameStats, setFrameStats] = useState<FrameBudgetReport | null>(null);
 
+  // Per-instance frame-budget monitor. Lazily created so it survives re-renders
+  // without re-instantiating each time.
   const monitorRef = useRef<FrameBudgetMonitor | null>(null);
-  if (monitorRef.current === null) monitorRef.current = new FrameBudgetMonitor();
+  if (monitorRef.current === null) {
+    monitorRef.current = new FrameBudgetMonitor();
+  }
 
   // ─── Visibility tracking ──────────────────────────────────────────────────────
   useEffect(() => {
@@ -97,7 +109,16 @@ export function LiveMetricsCanvas({ stream, metrics, height = 300 }: LiveMetrics
     return () => clearInterval(id);
   }, []);
 
-  // ─── Worker setup ────────────────────────────────────────────────────────────
+  // Dev-mode frame-budget readout: surface p95 draw time and dropped frames so
+  // regressions in the render loop are visible without DevTools.
+  useEffect(() => {
+    if (process.env.NODE_ENV !== 'development') return;
+    const interval = setInterval(() => {
+      setFrameStats(monitorRef.current?.report() ?? null);
+    }, 1000);
+    return () => clearInterval(interval);
+  }, []);
+
   useEffect(() => {
     if (typeof Worker === 'undefined' || typeof OffscreenCanvas === 'undefined') {
       fallbackRef.current = true;
@@ -276,11 +297,16 @@ export function LiveMetricsCanvas({ stream, metrics, height = 300 }: LiveMetrics
       const monitor = monitorRef.current;
       monitor?.beginFrame(now);
 
+      // Budget-adaptive work shedding: when our recent draw cost is eating too
+      // much of the frame, full redraws are deferred and points are decimated
+      // harder so the loop stays within budget instead of compounding jank.
       const underPressure = monitor?.isUnderPressure() ?? false;
       const fullRedrawInterval = underPressure ? FULL_REDRAW_MS * 2 : FULL_REDRAW_MS;
       const fullRedraw = now - lastFullRedraw.current >= fullRedrawInterval;
       const padding = 10;
 
+      // Never plot more points than there are horizontal pixels (the line
+      // rasteriser collapses them anyway), and halve that again under pressure.
       const widthCap = Math.max(50, Math.floor(w));
       const maxPoints = underPressure
         ? Math.max(50, Math.floor(Math.min(MAX_POINTS_PER_METRIC, widthCap) / 2))
@@ -293,14 +319,19 @@ export function LiveMetricsCanvas({ stream, metrics, height = 300 }: LiveMetrics
           ? chartPalette
           : ['#5ec962', '#fca50a', '#21918c', '#932667', '#fcffa4'];
 
+      const xOf = (i: number) => padding + (i / (count - 1)) * (w - 2 * padding);
+
       metrics.forEach((metric, idx) => {
         const color = colors[idx % colors.length] ?? '#ffffff';
         const { min, max } = computeRange(metric);
         const rng = max - min || 1;
+        const yOf = (v: number) => h - padding - ((v - min) / rng) * (h - 2 * padding);
 
         const startIdx = !fullRedraw && lastDrawnHead.current > 0
           ? Math.max(0, lastDrawnHead.current - 1)
           : 0;
+
+        const stride = decimationStride(count - startIdx, maxPoints);
 
         const stride = decimationStride(count - startIdx, maxPoints);
 
@@ -311,14 +342,13 @@ export function LiveMetricsCanvas({ stream, metrics, height = 300 }: LiveMetrics
         let lastPlotted = -1;
 
         for (let i = startIdx; i < count; i += stride) {
-          const v = (ring[(head + i) % RING_CAPACITY] as MetricsFrame).values[metric];
+          const ringIdx = (head + i) % RING_CAPACITY;
+          const frame = ring[ringIdx] as MetricsFrame;
+          const v = frame.values[metric];
           if (v === undefined) continue;
-          const x = padding + (i / (count - 1)) * (w - 2 * padding);
-          const y = h - padding - ((v - min) / rng) * (h - 2 * padding);
-          first ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
-          first = false;
-          lastPlotted = i;
-        }
+
+          const x = xOf(i);
+          const y = yOf(v);
 
         // Always anchor to the most recent sample
         if (lastPlotted !== count - 1) {
@@ -327,6 +357,21 @@ export function LiveMetricsCanvas({ stream, metrics, height = 300 }: LiveMetrics
             const x = padding + ((count - 1) / (count - 1)) * (w - 2 * padding);
             const y = h - padding - ((v - min) / rng) * (h - 2 * padding);
             first ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+          }
+          lastPlotted = i;
+        }
+
+        // Decimation can step over the most recent sample; always anchor the
+        // line to it so the chart reaches "now" regardless of stride.
+        if (lastPlotted !== count - 1) {
+          const ringIdx = (head + count - 1) % RING_CAPACITY;
+          const frame = ring[ringIdx] as MetricsFrame;
+          const v = frame.values[metric];
+          if (v !== undefined) {
+            const x = xOf(count - 1);
+            const y = yOf(v);
+            if (first) ctx.moveTo(x, y);
+            else ctx.lineTo(x, y);
           }
         }
 
@@ -338,13 +383,17 @@ export function LiveMetricsCanvas({ stream, metrics, height = 300 }: LiveMetrics
         rangeCache.current.clear();
       }
       lastDrawnHead.current = head + count;
+
       monitor?.endFrame(performance.now());
     },
     [height, metrics, computeRange, chartPalette],
   );
 
   const isVisible = useCallback(() => isPageVisible.current, []);
-  const handleResumeAfterHidden = useCallback(() => { lastFullRedraw.current = 0; }, []);
+  const handleResumeAfterHidden = useCallback(() => {
+    // Tab was hidden long enough; force a full redraw on resume.
+    lastFullRedraw.current = 0;
+  }, []);
 
   useRenderLoop({
     draw: drawFrame,
