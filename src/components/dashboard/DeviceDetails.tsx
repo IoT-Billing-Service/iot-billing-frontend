@@ -3,6 +3,7 @@
 import { useMemo } from 'react';
 import type { DeviceTelemetry } from '@/types';
 import { sanitizeHtml } from '@/utils/sanitizer';
+import { useIsHydrated } from '@/hooks/useIsHydrated';
 
 function sanitizeMetadata(meta: Record<string, string>): Record<string, string> {
   const sanitized: Record<string, string> = {};
@@ -16,11 +17,28 @@ interface DeviceDetailsProps {
   device: DeviceTelemetry;
 }
 
+export function DeviceDetailsSkeleton() {
+  return (
+    <div className="rounded-lg border border-gray-700 bg-gray-900 p-4 animate-pulse">
+      <div className="h-5 w-40 rounded bg-gray-700" />
+      <div className="mt-2 grid grid-cols-2 gap-4">
+        {[...Array(4)].map((_, i) => (
+          <div key={i} className="h-4 rounded bg-gray-800" />
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export function DeviceDetails({ device }: DeviceDetailsProps) {
+  const hydrated = useIsHydrated();
+
   const safeMetadata = useMemo(() => {
     if (!device.metadata) return null;
     return sanitizeMetadata(device.metadata);
   }, [device.metadata]);
+
+  if (!hydrated) return <DeviceDetailsSkeleton />;
 
   return (
     <div className="rounded-lg border border-gray-700 bg-gray-900 p-4">
