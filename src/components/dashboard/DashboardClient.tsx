@@ -4,6 +4,11 @@ import dynamic from 'next/dynamic';
 import { useWallet } from '@/components/providers/WalletProvider';
 import type { BillingAnalyticsResponse } from '@/lib/billingAnalytics';
 
+const FleetCanvasGrid = dynamic(
+  () => import('@/components/dashboard/FleetCanvasGrid').then((m) => ({ default: m.FleetCanvasGrid })),
+  { ssr: false },
+);
+
 const TelemetryChart = dynamic(
   () =>
     import('@/components/dashboard/TelemetryChart').then((m) => ({ default: m.TelemetryChart })),
@@ -23,14 +28,18 @@ const TelemetryChart = dynamic(
 
 interface DashboardClientProps {
   analytics: BillingAnalyticsResponse;
+  initialDeviceCount: number;
 }
 
-export function DashboardClient({ analytics }: DashboardClientProps) {
+export function DashboardClient({ analytics, initialDeviceCount }: DashboardClientProps) {
   const { metrics } = useWallet();
 
   if (!metrics?.isConnected) {
     return (
-      <div className="flex items-center justify-center h-64">
+      <div
+        className="flex items-center justify-center h-64"
+        data-device-count={initialDeviceCount}
+      >
         <p className="text-gray-400">Connect your wallet to view dashboard data.</p>
       </div>
     );
@@ -72,6 +81,10 @@ export function DashboardClient({ analytics }: DashboardClientProps) {
       <div className="rounded-lg border border-gray-700 bg-gray-900 p-6">
         <h3 className="mb-4 text-sm font-semibold text-gray-300">Power Usage</h3>
         <TelemetryChart data={chartData} metric="Usage (kWh)" />
+      </div>
+      <div className="rounded-lg border border-gray-700 bg-gray-900 p-6">
+        <h3 className="mb-4 text-sm font-semibold text-gray-300">Fleet Grid</h3>
+        <FleetCanvasGrid fleets={[]} />
       </div>
     </div>
   );

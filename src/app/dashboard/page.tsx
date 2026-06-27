@@ -1,4 +1,5 @@
 import { redirect } from 'next/navigation';
+import { cookies } from 'next/headers';
 import { DashboardClient } from '@/components/dashboard/DashboardClient';
 import { generateMockAnalytics } from '@/lib/billingAnalytics';
 
@@ -76,5 +77,9 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
 
   const analytics = generateMockAnalytics(fromDate, toDate);
 
-  return <DashboardClient analytics={analytics} />;
+  const cookieStore = await cookies();
+  const deviceCountRaw = cookieStore.get('x-device-count')?.value;
+  const initialDeviceCount = deviceCountRaw !== undefined ? parseInt(deviceCountRaw, 10) : 0;
+
+  return <DashboardClient analytics={analytics} initialDeviceCount={initialDeviceCount} />;
 }

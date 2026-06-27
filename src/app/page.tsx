@@ -76,5 +76,5 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
 
   const analytics = generateMockAnalytics(fromDate, toDate);
 
-  return <DashboardClient analytics={analytics} />;
+  return <DashboardClient analytics={analytics} initialDeviceCount={0} />;
 }
