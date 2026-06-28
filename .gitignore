@@ -32,6 +32,12 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+npx prettier --check "src/**/*.{ts,tsx,css,json}"
+  shell: /usr/bin/bash -e {0}
+Checking formatting...
+[warn] src/components/pwa/ServiceWorkerRegister.tsx
+[warn] Code style issues found in the above file. Run Prettier with --write to fix.
+Error: Process completed with exit code 1.
 
 # vercel
 .vercel

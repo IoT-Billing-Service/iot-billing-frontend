@@ -59,6 +59,13 @@ export function TransactionModal({
   const submittingRef = useRef(false);
   const { markDirty, markClean } = useFormTracker();
   const formId = `${type}-${contractId}`;
+  const transactionIdRef = useRef<string | undefined>(undefined);
+  // Initialize transaction ID in useEffect (not during render)
+  useEffect(() => {
+    if (!transactionIdRef.current) {
+      transactionIdRef.current = `${type}-${contractId}-${Date.now()}`;
+    }
+  }, [type, contractId]);
 
   const {
     feeBreakdown,
@@ -97,14 +104,32 @@ export function TransactionModal({
   }, [amount, formId, markDirty, markClean]);
 
   useEffect(() => {
+    if (!transactionIdRef.current) return;
+    const txId = transactionIdRef.current;
+    localStorage.setItem('active_transaction_id', txId);
+    if (navigator.serviceWorker.controller) {
+      navigator.serviceWorker.controller.postMessage({
+        type: 'ACQUIRE_TX_LOCK',
+        tx_id: txId,
+      });
+    }
     return () => {
       markClean(formId);
+      localStorage.removeItem('active_transaction_id');
+      if (navigator.serviceWorker.controller) {
+        navigator.serviceWorker.controller.postMessage({
+          type: 'RELEASE_TX_LOCK',
+          tx_id: txId,
+        });
+      }
     };
   }, [formId, markClean]);
 
   const handleSubmit = async () => {
     if (!amount || !metrics?.publicKey) return;
     if (submittingRef.current) return; // already in flight — ignore re-entrant submits
+    if (!transactionIdRef.current) return;
+    const txId = transactionIdRef.current;
     submittingRef.current = true;
     setSubmitting(true);
     setTxError(null);
@@ -146,6 +171,14 @@ export function TransactionModal({
     } finally {
       setSubmitting(false);
       submittingRef.current = false;
+      // Release transaction lock after submission
+      localStorage.removeItem('active_transaction_id');
+      if (navigator.serviceWorker.controller) {
+        navigator.serviceWorker.controller.postMessage({
+          type: 'RELEASE_TX_LOCK',
+          tx_id: txId,
+        });
+      }
     }
   };
 
