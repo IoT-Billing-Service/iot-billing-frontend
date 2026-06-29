@@ -1,4 +1,4 @@
-import React, { Component, ReactNode } from 'react';
+import { Component, ReactNode } from 'react';
 
 type ErrorCategory = 'NETWORK' | 'CONTRACT' | 'UNKNOWN';
 
